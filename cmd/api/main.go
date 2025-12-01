@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/nourabuild/iam-service/internal/infrastructure/server"
-	// "github.com/shohinsan/meetxapi/internal/infrastructure/server"
 )
 
 func main() {
