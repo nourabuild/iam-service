@@ -8,13 +8,13 @@ import (
 	"time"
 
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/nourabuild/iam-service/internal/database"
+	"github.com/nourabuild/iam-service/internal/infrastructure/sqldb"
 )
 
 type Server struct {
 	port int
 
-	db database.Service
+	db sqldb.Service
 }
 
 func NewServer() *http.Server {
@@ -22,7 +22,7 @@ func NewServer() *http.Server {
 	NewServer := &Server{
 		port: port,
 
-		db: database.New(),
+		db: sqldb.New(),
 	}
 
 	// Declare Server config

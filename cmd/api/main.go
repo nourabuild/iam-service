@@ -4,13 +4,53 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
-	"github.com/nourabuild/iam-service/internal/server"
+	"github.com/nourabuild/iam-service/internal/infrastructure/server"
+	// "github.com/shohinsan/meetxapi/internal/infrastructure/server"
 )
+
+func main() {
+
+	if err := run(); err != nil {
+		log.Fatalf("Application failed: %v", err)
+	}
+}
+
+func run() error {
+
+	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	log.Info("GOMAXPROCS", "cpu", runtime.GOMAXPROCS(0))
+
+	server := server.NewServer()
+
+	// Create a done channel to signal when the shutdown is complete
+	done := make(chan bool, 1)
+
+	// Run graceful shutdown in a separate goroutine
+	go gracefulShutdown(server, done)
+
+	// Start the server
+	log.Info("Starting server", "port", server.Addr)
+
+	err := server.ListenAndServe()
+	if err != nil && err != http.ErrServerClosed {
+		panic(fmt.Sprintf("http server error: %s", err))
+	}
+
+	// Wait for the graceful shutdown to complete
+	<-done
+	log.Info("Graceful shutdown complete")
+
+	return nil
+}
 
 func gracefulShutdown(apiServer *http.Server, done chan bool) {
 	// Create context that listens for the interrupt signal from the OS.
@@ -34,24 +74,4 @@ func gracefulShutdown(apiServer *http.Server, done chan bool) {
 
 	// Notify the main goroutine that the shutdown is complete
 	done <- true
-}
-
-func main() {
-
-	server := server.NewServer()
-
-	// Create a done channel to signal when the shutdown is complete
-	done := make(chan bool, 1)
-
-	// Run graceful shutdown in a separate goroutine
-	go gracefulShutdown(server, done)
-
-	err := server.ListenAndServe()
-	if err != nil && err != http.ErrServerClosed {
-		panic(fmt.Sprintf("http server error: %s", err))
-	}
-
-	// Wait for the graceful shutdown to complete
-	<-done
-	log.Println("Graceful shutdown complete.")
 }
