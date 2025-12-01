@@ -35,7 +35,7 @@ go.work.sum
 .env.*.local
 
 # Debug files
-debug
+
 *.log
 
 # Temporary files
