@@ -1,64 +1,53 @@
-# Simple Makefile for a Go project
+# ==============================================================================
+# Load environment variables 
+ifneq (,$(wildcard ./.env))
+include .env
+export
+endif
 
-# Build the application
-all: build test
+# ==============================================================================
+# Define dependencies
+GOLANG          := golang:1.25
+ALPINE          := alpine:3.22
 
-build:
-	@echo "Building..."
-	
-	
-	@go build -o main cmd/api/main.go
+POSTGRES        := postgres:17.2
+SERVICE_APP    	:= iam-service
+BASE_IMAGE_NAME := insidious000
+VERSION         := 0.0.1
+API_IMAGE       := $(BASE_IMAGE_NAME)/$(SERVICE_APP):$(VERSION)
 
-# Run the application
+# ==============================================================================
+# Main
+
 run:
-	@go run cmd/api/main.go
-# Create DB container
-docker-run:
-	@if docker compose up --build 2>/dev/null; then \
-		: ; \
-	else \
-		echo "Falling back to Docker Compose V1"; \
-		docker-compose up --build; \
-	fi
+	lsof -i :8080 | awk 'NR!=1 {print $$2}' | xargs -r kill -9
+	go run ./cmd/meetx/main.go
 
-# Shutdown DB container
-docker-down:
-	@if docker compose down 2>/dev/null; then \
-		: ; \
-	else \
-		echo "Falling back to Docker Compose V1"; \
-		docker-compose down; \
-	fi
+# ==============================================================================
+# Modules support
 
-# Test the application
-test:
-	@echo "Testing..."
-	@go test ./... -v
-# Integrations Tests for the application
-itest:
-	@echo "Running integration tests..."
-	@go test ./internal/database -v
+deps-reset:
+	git checkout -- go.mod
+	go mod tidy
+	go mod vendor
 
-# Clean the binary
-clean:
-	@echo "Cleaning..."
-	@rm -f main
+tidy:
+	go mod tidy
+	go mod vendor
 
-# Live Reload
-watch:
-	@if command -v air > /dev/null; then \
-            air; \
-            echo "Watching...";\
-        else \
-            read -p "Go's 'air' is not installed on your machine. Do you want to install it? [Y/n] " choice; \
-            if [ "$$choice" != "n" ] && [ "$$choice" != "N" ]; then \
-                go install github.com/air-verse/air@latest; \
-                air; \
-                echo "Watching...";\
-            else \
-                echo "You chose not to install air. Exiting..."; \
-                exit 1; \
-            fi; \
-        fi
+deps-list:
+	go list -m -u -mod=readonly all
 
-.PHONY: all build run test clean watch docker-run docker-down itest
+deps-upgrade:
+	go get -u -v ./...
+	go mod tidy
+	go mod vendor
+
+deps-cleancache:
+	go clean -modcache
+
+verify-checksums:
+	go mod verify
+
+list:
+	go list -mod=mod all

@@ -113,3 +113,5 @@ func (s *service) Close() error {
 	log.Printf("Disconnected from database: %s", database)
 	return s.db.Close()
 }
+
+// Database Only Code here

@@ -12,17 +12,15 @@ import (
 )
 
 type Server struct {
-	port int
-
-	db sqldb.Service
+	port  int
+	sqldb sqldb.Service
 }
 
 func NewServer() *http.Server {
 	port, _ := strconv.Atoi(os.Getenv("PORT"))
 	NewServer := &Server{
-		port: port,
-
-		db: sqldb.New(),
+		port:  port,
+		sqldb: sqldb.New(),
 	}
 
 	// Declare Server config

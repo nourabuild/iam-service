@@ -6,17 +6,7 @@ import (
 	"net/http"
 )
 
-func (s *Server) RegisterRoutes() http.Handler {
-	mux := http.NewServeMux()
-
-	// Register routes
-	mux.HandleFunc("/", s.HelloWorldHandler)
-
-	mux.HandleFunc("/health", s.healthHandler)
-
-	// Wrap the mux with CORS middleware
-	return s.corsMiddleware(mux)
-}
+// Middleware
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +27,39 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Log request details
+		ip := r.RemoteAddr
+		proto := r.Proto
+		method := r.Method
+		uri := r.URL.RequestURI()
+
+		log.Printf("IP: %s, Protocol: %s, Method: %s, URI: %s", ip, proto, method, uri)
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Routes
+
+func (s *Server) RegisterRoutes() http.Handler {
+	mux := http.NewServeMux()
+
+	// Register routes
+	mux.HandleFunc("/", s.HelloWorldHandler)
+
+	mux.HandleFunc("/health", s.healthHandler)
+
+	// Apply middleware chain (order: cors -> logging -> handler)
+	handler := s.loggingMiddleware(mux)
+	handler = s.corsMiddleware(handler)
+
+	return handler
+}
+
+// Handlers
+
 func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]string{"message": "Hello World"}
 	jsonResp, err := json.Marshal(resp)
@@ -51,7 +74,7 @@ func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
-	resp, err := json.Marshal(s.db.Health())
+	resp, err := json.Marshal(s.sqldb.Health())
 	if err != nil {
 		http.Error(w, "Failed to marshal health check response", http.StatusInternalServerError)
 		return
