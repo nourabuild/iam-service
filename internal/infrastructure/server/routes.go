@@ -8,6 +8,20 @@ import (
 
 // Middleware
 
+// MidFunc is a function that wraps an http.Handler.
+type MidFunc func(http.Handler) http.Handler
+
+// WrapMiddleware wraps an http.Handler with the provided middlewares.
+func WrapMiddleware(h http.Handler, middlewares ...MidFunc) http.Handler {
+	// Apply middlewares in reverse order
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		if middlewares[i] != nil {
+			h = middlewares[i](h)
+		}
+	}
+	return h
+}
+
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers
@@ -47,15 +61,14 @@ func (s *Server) RegisterRoutes() http.Handler {
 	mux := http.NewServeMux()
 
 	// Register routes
-	mux.HandleFunc("/", s.HelloWorldHandler)
-
-	mux.HandleFunc("/health", s.healthHandler)
+	mux.HandleFunc("GET /", s.HelloWorldHandler)
+	mux.HandleFunc("GET /health", s.healthHandler)
 
 	// Apply middleware chain (order: cors -> logging -> handler)
-	handler := s.loggingMiddleware(mux)
-	handler = s.corsMiddleware(handler)
-
-	return handler
+	return WrapMiddleware(mux,
+		s.corsMiddleware,
+		s.loggingMiddleware,
+	)
 }
 
 // Handlers
