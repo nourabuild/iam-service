@@ -6,32 +6,6 @@ import (
 	"net/http"
 )
 
-// type app struct {
-// 	db sqldb.Service
-// }
-
-// func newApp(db sqldb.Service) *app {
-// 	return &app{
-// 		db: db,
-// 	}
-// }
-
-// Routes
-
-func (s *Server) RegisterRoutes() http.Handler {
-	mux := http.NewServeMux()
-
-	// Register routes
-	mux.HandleFunc("GET /", s.HelloWorldHandler)
-	mux.HandleFunc("GET /health", s.healthHandler)
-
-	// Apply middleware chain (order: cors -> logging -> handler)
-	return WrapMiddleware(mux,
-		s.corsMiddleware,
-		s.loggingMiddleware,
-	)
-}
-
 func (s *Server) HelloWorldHandler(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]string{"message": "Hello World"}
 	jsonResp, err := json.Marshal(resp)

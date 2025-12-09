@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nourabuild/iam-service/internal/infrastructure/server"
+	"github.com/nourabuild/iam-service/internal/server"
 )
 
 func main() {

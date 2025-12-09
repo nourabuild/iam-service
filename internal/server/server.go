@@ -8,7 +8,7 @@ import (
 	"time"
 
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/nourabuild/iam-service/internal/infrastructure/sqldb"
+	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 )
 
 type Server struct {
