@@ -5,6 +5,7 @@ go 1.25.4
 require (
 	github.com/arl/statsviz v0.8.0
 	github.com/getsentry/sentry-go v0.40.0
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/joho/godotenv v1.5.1
 	github.com/testcontainers/testcontainers-go v0.40.0
