@@ -51,3 +51,28 @@ verify-checksums:
 
 list:
 	go list -mod=mod all
+
+# ==============================================================================
+# Database migrations
+
+# Create empty migration manually
+migrate-create:
+	@read -p "Enter migration name: " name; \
+	migrate create -ext sql -dir internal/sdk/migrate/sql -seq $$name
+
+# Run migrations
+migrate-up:
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" up
+
+migrate-down:
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" down
+
+migrate-force:
+	@read -p "Enter version: " version; \
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" force $$version
+
+migrate-version:
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" version
+
+migrate-drop:
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" drop -f
