@@ -3,6 +3,7 @@ package sqldb
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -11,6 +12,26 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/joho/godotenv/autoload"
+)
+
+// lib/pq errorCodeNames
+// https://github.com/lib/pq/blob/master/error.go#L178
+const (
+	uniqueViolation     = "23505"
+	undefinedTable      = "42P01"
+	foreignKeyViolation = "23503"
+	checkViolation      = "23514"
+	notNullViolation    = "23502"
+)
+
+var (
+	ErrDBNotFound          = sql.ErrNoRows
+	ErrDBDuplicatedEntry   = errors.New("duplicated entry")
+	ErrUndefinedTable      = errors.New("undefined table")
+	ErrForeignKeyViolation = errors.New("foreign key violation")
+	ErrCheckViolation      = errors.New("check constraint violation")
+	ErrNotNullViolation    = errors.New("not null violation")
+	ErrTransactionFailed   = errors.New("transaction failed")
 )
 
 // Service represents a service that interacts with a database.
@@ -22,6 +43,31 @@ type Service interface {
 	// Close terminates the database connection.
 	// It returns an error if the connection cannot be closed.
 	Close() error
+
+	// User operations
+	GetUserById(ctx context.Context, userID string) (User, error)
+	GetUserByEmail(ctx context.Context, email string) (User, error)
+	GetUserByAccount(ctx context.Context, account string) (User, error)
+	CreateUser(ctx context.Context, user NewUser) (User, error)
+}
+
+// NewUser represents the data needed to create a new user
+type NewUser struct {
+	Name     string
+	Account  string
+	Email    string
+	Password []byte // should be hashed before passing
+}
+
+// User represents a user in the database
+type User struct {
+	ID        string
+	Name      string
+	Account   string
+	Email     string
+	Password  []byte
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type service struct {
@@ -114,4 +160,272 @@ func (s *service) Close() error {
 	return s.db.Close()
 }
 
-// Database Only Code here
+// ---------------------------------------------
+// SQL Commands
+// ---------------------------------------------
+
+// SelectMe retrieves a user by their ID
+func (s *service) GetUserById(ctx context.Context, userID string) (User, error) {
+	const query = `
+		SELECT 
+			id, 
+			name, 
+			account, 
+			email, 
+			password, 
+			created_at, 
+			updated_at
+		FROM users
+		WHERE id = $1
+	`
+
+	var user User
+	err := s.db.QueryRowContext(ctx, query, userID).Scan(
+		&user.ID,
+		&user.Name,
+		&user.Account,
+		&user.Email,
+		&user.Password,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, ErrDBNotFound
+		}
+		return User{}, fmt.Errorf("selecting user: %w", err)
+	}
+
+	return user, nil
+}
+
+// GetUserByEmail retrieves a user by their email address
+func (s *service) GetUserByEmail(ctx context.Context, email string) (User, error) {
+	const query = `
+		SELECT 
+			id, 
+			name, 
+			account, 
+			email, 
+			password, 
+			created_at, 
+			updated_at
+		FROM users
+		WHERE email = $1
+	`
+
+	var user User
+	err := s.db.QueryRowContext(ctx, query, email).Scan(
+		&user.ID,
+		&user.Name,
+		&user.Account,
+		&user.Email,
+		&user.Password,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, ErrDBNotFound
+		}
+		return User{}, fmt.Errorf("selecting user by email: %w", err)
+	}
+
+	return user, nil
+}
+
+// GetUserByAccount retrieves a user by their account name
+func (s *service) GetUserByAccount(ctx context.Context, account string) (User, error) {
+	const query = `
+		SELECT 
+			id, 
+			name, 
+			account, 
+			email, 
+			password, 
+			created_at, 
+			updated_at
+		FROM users
+		WHERE account = $1
+	`
+
+	var user User
+	err := s.db.QueryRowContext(ctx, query, account).Scan(
+		&user.ID,
+		&user.Name,
+		&user.Account,
+		&user.Email,
+		&user.Password,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, ErrDBNotFound
+		}
+		return User{}, fmt.Errorf("selecting user by account: %w", err)
+	}
+
+	return user, nil
+}
+
+// CreateUser inserts a new user into the database
+func (s *service) CreateUser(ctx context.Context, nu NewUser) (User, error) {
+	const query = `
+		INSERT INTO users (name, account, email, password)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, name, account, email, password, created_at, updated_at
+	`
+
+	var user User
+
+	err := s.db.QueryRowContext(ctx, query,
+		nu.Name,
+		nu.Account,
+		nu.Email,
+		nu.Password,
+	).Scan(
+		&user.ID,
+		&user.Name,
+		&user.Account,
+		&user.Email,
+		&user.Password,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if isPgError(err, uniqueViolation) {
+			return User{}, ErrDBDuplicatedEntry
+		}
+		return User{}, fmt.Errorf("creating user: %w", err)
+	}
+
+	return user, nil
+}
+
+// ---------------------------------------------
+// Helpers
+// ---------------------------------------------
+
+// isPgError checks if the error is a PostgreSQL error with the given code
+func isPgError(err error, code string) bool {
+	var pgErr interface{ SQLState() string }
+	if errors.As(err, &pgErr) {
+		return pgErr.SQLState() == code
+	}
+	return false
+}
+
+// NullString creates a sql.NullString from a string pointer.
+func NullString(s *string) sql.NullString {
+	if s == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *s, Valid: true}
+}
+
+// NullInt64 creates a sql.NullInt64 from an int64 pointer.
+func NullInt64(i *int64) sql.NullInt64 {
+	if i == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *i, Valid: true}
+}
+
+// NullFloat64 creates a sql.NullFloat64 from a float64 pointer.
+func NullFloat64(f *float64) sql.NullFloat64 {
+	if f == nil {
+		return sql.NullFloat64{}
+	}
+	return sql.NullFloat64{Float64: *f, Valid: true}
+}
+
+// NullBool creates a sql.NullBool from a bool pointer.
+func NullBool(b *bool) sql.NullBool {
+	if b == nil {
+		return sql.NullBool{}
+	}
+	return sql.NullBool{Bool: *b, Valid: true}
+}
+
+// NullTime creates a sql.NullTime from a time.Time pointer.
+func NullTime(t *time.Time) sql.NullTime {
+	if t == nil {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: *t, Valid: true}
+}
+
+// StringPtr returns a pointer to a string from sql.NullString.
+func StringPtr(ns sql.NullString) *string {
+	if !ns.Valid {
+		return nil
+	}
+	return &ns.String
+}
+
+// Int64Ptr returns a pointer to an int64 from sql.NullInt64.
+func Int64Ptr(ni sql.NullInt64) *int64 {
+	if !ni.Valid {
+		return nil
+	}
+	return &ni.Int64
+}
+
+// Float64Ptr returns a pointer to a float64 from sql.NullFloat64.
+func Float64Ptr(nf sql.NullFloat64) *float64 {
+	if !nf.Valid {
+		return nil
+	}
+	return &nf.Float64
+}
+
+// BoolPtr returns a pointer to a bool from sql.NullBool.
+func BoolPtr(nb sql.NullBool) *bool {
+	if !nb.Valid {
+		return nil
+	}
+	return &nb.Bool
+}
+
+// TimePtr returns a pointer to a time.Time from sql.NullTime.
+func TimePtr(nt sql.NullTime) *time.Time {
+	if !nt.Valid {
+		return nil
+	}
+	return &nt.Time
+}
+
+// IsNotFound checks if the error is a not found error.
+func IsNotFound(err error) bool {
+	return errors.Is(err, ErrDBNotFound)
+}
+
+// IsDuplicateEntry checks if the error is a duplicate entry error.
+func IsDuplicateEntry(err error) bool {
+	return isPgError(err, uniqueViolation)
+}
+
+// IsForeignKeyViolation checks if the error is a foreign key violation error.
+func IsForeignKeyViolation(err error) bool {
+	return isPgError(err, foreignKeyViolation)
+}
+
+// IsUndefinedTable checks if the error is an undefined table error.
+func IsUndefinedTable(err error) bool {
+	return isPgError(err, undefinedTable)
+}
+
+// IsCheckViolation checks if the error is a check constraint violation error.
+func IsCheckViolation(err error) bool {
+	return isPgError(err, checkViolation)
+}
+
+// IsNotNullViolation checks if the error is a not null violation error.
+func IsNotNullViolation(err error) bool {
+	return isPgError(err, notNullViolation)
+}
