@@ -66,6 +66,10 @@ type User struct {
 	Account   string
 	Email     string
 	Password  []byte
+	Bio       *string
+	DOB       *string
+	City      *string
+	Phone     *string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -172,7 +176,11 @@ func (s *service) GetUserById(ctx context.Context, userID string) (User, error) 
 			name, 
 			account, 
 			email, 
-			password, 
+			password,
+			bio,
+			dob,
+			city,
+			phone,
 			created_at, 
 			updated_at
 		FROM users
@@ -186,6 +194,10 @@ func (s *service) GetUserById(ctx context.Context, userID string) (User, error) 
 		&user.Account,
 		&user.Email,
 		&user.Password,
+		&user.Bio,
+		&user.DOB,
+		&user.City,
+		&user.Phone,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -208,7 +220,11 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (User, error
 			name, 
 			account, 
 			email, 
-			password, 
+			password,
+			bio,
+			dob,
+			city,
+			phone,
 			created_at, 
 			updated_at
 		FROM users
@@ -222,6 +238,10 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (User, error
 		&user.Account,
 		&user.Email,
 		&user.Password,
+		&user.Bio,
+		&user.DOB,
+		&user.City,
+		&user.Phone,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -244,7 +264,11 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (User, e
 			name, 
 			account, 
 			email, 
-			password, 
+			password,
+			bio,
+			dob,
+			city,
+			phone,
 			created_at, 
 			updated_at
 		FROM users
@@ -258,6 +282,10 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (User, e
 		&user.Account,
 		&user.Email,
 		&user.Password,
+		&user.Bio,
+		&user.DOB,
+		&user.City,
+		&user.Phone,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -277,7 +305,7 @@ func (s *service) CreateUser(ctx context.Context, nu NewUser) (User, error) {
 	const query = `
 		INSERT INTO users (name, account, email, password)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, name, account, email, password, created_at, updated_at
+		RETURNING id, name, account, email, password, bio, dob, city, phone, created_at, updated_at
 	`
 
 	var user User
@@ -293,6 +321,10 @@ func (s *service) CreateUser(ctx context.Context, nu NewUser) (User, error) {
 		&user.Account,
 		&user.Email,
 		&user.Password,
+		&user.Bio,
+		&user.DOB,
+		&user.City,
+		&user.Phone,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
