@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/nourabuild/iam-service/internal/models"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/joho/godotenv/autoload"
 )
@@ -45,33 +47,10 @@ type Service interface {
 	Close() error
 
 	// User operations
-	GetUserById(ctx context.Context, userID string) (User, error)
-	GetUserByEmail(ctx context.Context, email string) (User, error)
-	GetUserByAccount(ctx context.Context, account string) (User, error)
-	CreateUser(ctx context.Context, user NewUser) (User, error)
-}
-
-// NewUser represents the data needed to create a new user
-type NewUser struct {
-	Name     string
-	Account  string
-	Email    string
-	Password []byte // should be hashed before passing
-}
-
-// User represents a user in the database
-type User struct {
-	ID        string
-	Name      string
-	Account   string
-	Email     string
-	Password  []byte
-	Bio       *string
-	DOB       *string
-	City      *string
-	Phone     *string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	GetUserById(ctx context.Context, userID string) (models.User, error)
+	GetUserByEmail(ctx context.Context, email string) (models.User, error)
+	GetUserByAccount(ctx context.Context, account string) (models.User, error)
+	CreateUser(ctx context.Context, user models.NewUser) (models.User, error)
 }
 
 type service struct {
@@ -169,7 +148,7 @@ func (s *service) Close() error {
 // ---------------------------------------------
 
 // SelectMe retrieves a user by their ID
-func (s *service) GetUserById(ctx context.Context, userID string) (User, error) {
+func (s *service) GetUserById(ctx context.Context, userID string) (models.User, error) {
 	const query = `
 		SELECT 
 			id, 
@@ -187,7 +166,7 @@ func (s *service) GetUserById(ctx context.Context, userID string) (User, error) 
 		WHERE id = $1
 	`
 
-	var user User
+	var user models.User
 	err := s.db.QueryRowContext(ctx, query, userID).Scan(
 		&user.ID,
 		&user.Name,
@@ -204,16 +183,16 @@ func (s *service) GetUserById(ctx context.Context, userID string) (User, error) 
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return User{}, ErrDBNotFound
+			return models.User{}, ErrDBNotFound
 		}
-		return User{}, fmt.Errorf("selecting user: %w", err)
+		return models.User{}, fmt.Errorf("selecting user: %w", err)
 	}
 
 	return user, nil
 }
 
 // GetUserByEmail retrieves a user by their email address
-func (s *service) GetUserByEmail(ctx context.Context, email string) (User, error) {
+func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User, error) {
 	const query = `
 		SELECT 
 			id, 
@@ -231,7 +210,7 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (User, error
 		WHERE email = $1
 	`
 
-	var user User
+	var user models.User
 	err := s.db.QueryRowContext(ctx, query, email).Scan(
 		&user.ID,
 		&user.Name,
@@ -248,16 +227,16 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (User, error
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return User{}, ErrDBNotFound
+			return models.User{}, ErrDBNotFound
 		}
-		return User{}, fmt.Errorf("selecting user by email: %w", err)
+		return models.User{}, fmt.Errorf("selecting user by email: %w", err)
 	}
 
 	return user, nil
 }
 
 // GetUserByAccount retrieves a user by their account name
-func (s *service) GetUserByAccount(ctx context.Context, account string) (User, error) {
+func (s *service) GetUserByAccount(ctx context.Context, account string) (models.User, error) {
 	const query = `
 		SELECT 
 			id, 
@@ -275,7 +254,7 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (User, e
 		WHERE account = $1
 	`
 
-	var user User
+	var user models.User
 	err := s.db.QueryRowContext(ctx, query, account).Scan(
 		&user.ID,
 		&user.Name,
@@ -292,23 +271,23 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (User, e
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return User{}, ErrDBNotFound
+			return models.User{}, ErrDBNotFound
 		}
-		return User{}, fmt.Errorf("selecting user by account: %w", err)
+		return models.User{}, fmt.Errorf("selecting user by account: %w", err)
 	}
 
 	return user, nil
 }
 
 // CreateUser inserts a new user into the database
-func (s *service) CreateUser(ctx context.Context, nu NewUser) (User, error) {
+func (s *service) CreateUser(ctx context.Context, nu models.NewUser) (models.User, error) {
 	const query = `
 		INSERT INTO users (name, account, email, password)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, name, account, email, password, bio, dob, city, phone, created_at, updated_at
 	`
 
-	var user User
+	var user models.User
 
 	err := s.db.QueryRowContext(ctx, query,
 		nu.Name,
@@ -331,9 +310,9 @@ func (s *service) CreateUser(ctx context.Context, nu NewUser) (User, error) {
 
 	if err != nil {
 		if isPgError(err, uniqueViolation) {
-			return User{}, ErrDBDuplicatedEntry
+			return models.User{}, ErrDBDuplicatedEntry
 		}
-		return User{}, fmt.Errorf("creating user: %w", err)
+		return models.User{}, fmt.Errorf("creating user: %w", err)
 	}
 
 	return user, nil

@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"errors"
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -39,12 +40,13 @@ type TokenService struct {
 }
 
 // NewTokenService creates a new token service with separate secrets for access and refresh tokens
-func NewTokenService(accessSecret, refreshSecret string, accessTokenDuration, refreshTokenDuration time.Duration) *TokenService {
+// Reads secrets from environment variables and uses default durations
+func NewTokenService() *TokenService {
 	return &TokenService{
-		accessSecretKey:      []byte(accessSecret),
-		refreshSecretKey:     []byte(refreshSecret),
-		accessTokenDuration:  accessTokenDuration,
-		refreshTokenDuration: refreshTokenDuration,
+		accessSecretKey:      []byte(os.Getenv("JWT_ACCESS_SECRET")),
+		refreshSecretKey:     []byte(os.Getenv("JWT_REFRESH_SECRET")),
+		accessTokenDuration:  15 * time.Minute,
+		refreshTokenDuration: 7 * 24 * time.Hour,
 		audience:             []string{"iam-service-api"},
 	}
 }

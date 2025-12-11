@@ -2,32 +2,47 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
 	"runtime"
 	"time"
 
+	"github.com/nourabuild/iam-service/internal/models"
 	"github.com/nourabuild/iam-service/internal/sdk/errs"
+	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
+	"github.com/nourabuild/iam-service/internal/services/hash"
+	"github.com/nourabuild/iam-service/internal/services/jwt"
 )
 
-type User struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Account   string    `json:"account"`
-	Email     string    `json:"email"`
-	Password  []byte    `json:"-"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
+// type app struct {
+// 	db       sqldb.Service
+// 	hash     *hash.HashService
+// 	token    *jwt.TokenService
+// 	mailtrap *mailtrap.MailtrapService
+// 	sentry   *sentry.SentryService
+// }
 
-type NewUser struct {
-	Name            string `json:"name" validate:"required,min=3"`
-	Account         string `json:"account" validate:"required,min=6"`
-	Email           string `json:"email" validate:"required,email"`
-	Password        string `json:"password" validate:"required,min=8"`
-	PasswordConfirm string `json:"password_confirm" validate:"required,eqfield=Password"`
-}
+// func newApp(
+// 	db sqldb.Service,
+// 	hash *hash.HashService,
+// 	token *jwt.TokenService,
+// 	mailtrap *mailtrap.MailtrapService,
+// 	sentry *sentry.SentryService,
+// ) *app {
+// 	return &app{
+// 		db:       db,
+// 		hash:     hash,
+// 		token:    token,
+// 		mailtrap: mailtrap,
+// 		sentry:   sentry,
+// 	}
+// }
+
+// =============================================================================
+// Health Check Handlers
+// =============================================================================
 
 func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 	// Database check
@@ -67,76 +82,374 @@ func (s *Server) handleLivenessCheck(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// =============================================================================
+// Auth Handlers
+// =============================================================================
+
+// func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+// 	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10 MB max
+// 		appErr := errs.New(errs.InvalidArgument, err)
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+
+// 	var input struct {
+// 		Name            string `json:"name"`
+// 		Account         string `json:"account"`
+// 		Email           string `json:"email"`
+// 		Password        string `json:"password"`
+// 		PasswordConfirm string `json:"password_confirm"`
+// 	}
+
+// 	input.Name = r.FormValue("name")
+// 	input.Account = r.FormValue("account")
+// 	input.Email = r.FormValue("email")
+// 	input.Password = r.FormValue("password")
+// 	input.PasswordConfirm = r.FormValue("password_confirm")
+
+// 	// Validate required fields
+// 	if input.Name == "" {
+// 		appErr := errs.Newf(errs.InvalidArgument, "name is required")
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+// 	if len(input.Name) < 3 {
+// 		appErr := errs.Newf(errs.InvalidArgument, "name must be at least 3 characters")
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+
+// 	if input.Account == "" {
+// 		appErr := errs.Newf(errs.InvalidArgument, "account is required")
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+// 	if len(input.Account) < 6 {
+// 		appErr := errs.Newf(errs.InvalidArgument, "account must be at least 6 characters")
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+
+// 	if input.Email == "" {
+// 		appErr := errs.Newf(errs.InvalidArgument, "email is required")
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+
+// 	if input.Password == "" {
+// 		appErr := errs.Newf(errs.InvalidArgument, "password is required")
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+// 	if len(input.Password) < 8 {
+// 		appErr := errs.Newf(errs.InvalidArgument, "password must be at least 8 characters")
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+
+// 	if input.PasswordConfirm == "" {
+// 		appErr := errs.Newf(errs.InvalidArgument, "password confirmation is required")
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+// 	if input.Password != input.PasswordConfirm {
+// 		appErr := errs.Newf(errs.InvalidArgument, "passwords do not match")
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+
+// 	ctx := r.Context()
+
+// 	// Check if user already exists by email
+// 	_, err := s.sqldb.GetUserByEmail(ctx, input.Email)
+// 	if err == nil {
+// 		appErr := errs.Newf(errs.AlreadyExists, "user with email %s already exists", input.Email)
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+// 	if !errors.Is(err, sqldb.ErrDBNotFound) {
+// 		appErr := errs.New(errs.Internal, err)
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+
+// 	// Check if user already exists by account
+// 	_, err = s.sqldb.GetUserByAccount(ctx, input.Account)
+// 	if err == nil {
+// 		appErr := errs.Newf(errs.AlreadyExists, "user with account %s already exists", input.Account)
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+// 	if !errors.Is(err, sqldb.ErrDBNotFound) {
+// 		appErr := errs.New(errs.Internal, err)
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+
+// 	// Hash the password
+// 	hashedPassword, err := hash.NewHashService().HashPassword(input.Password)
+// 	if err != nil {
+// 		appErr := errs.New(errs.Internal, err)
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+
+// 	// Create the new user
+// 	newUser := models.NewUser{
+// 		Name:     input.Name,
+// 		Account:  input.Account,
+// 		Email:    input.Email,
+// 		Password: []byte(hashedPassword),
+// 	}
+
+// 	user, err := s.sqldb.CreateUser(ctx, newUser)
+// 	if err != nil {
+// 		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
+// 			appErr := errs.Newf(errs.AlreadyExists, "user already exists")
+// 			w.Header().Set("Content-Type", "application/json")
+// 			w.WriteHeader(appErr.HTTPStatus())
+// 			json.NewEncoder(w).Encode(appErr)
+// 			return
+// 		}
+// 		appErr := errs.New(errs.Internal, err)
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+
+// 	// Generate tokens
+// 	tokenService := jwt.NewTokenService(
+// 		os.Getenv("JWT_ACCESS_SECRET"),
+// 		os.Getenv("JWT_REFRESH_SECRET"),
+// 		15*time.Minute, // Access token duration
+// 		7*24*time.Hour, // Refresh token duration (7 days)
+// 	)
+
+// 	tokens, err := tokenService.GenerateToken(user.ID, user.Email)
+// 	if err != nil {
+// 		appErr := errs.New(errs.Internal, err)
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.WriteHeader(appErr.HTTPStatus())
+// 		json.NewEncoder(w).Encode(appErr)
+// 		return
+// 	}
+
+// 	resp := map[string]string{
+// 		"message":      "Registration successful",
+// 		"access_token": tokens.AccessToken,
+// 	}
+
+// 	w.Header().Set("Content-Type", "application/json")
+// 	w.WriteHeader(http.StatusCreated)
+// 	if err := json.NewEncoder(w).Encode(resp); err != nil {
+// 		log.Printf("Failed to write response: %v", err)
+// 	}
+// }
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	respondErr := func(code errs.ErrCode, err error, msg string, args ...any) {
+		var appErr *errs.Error
+		if msg != "" {
+			appErr = errs.Newf(code, msg, args...)
+		} else {
+			appErr = errs.New(code, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(appErr.HTTPStatus())
+		json.NewEncoder(w).Encode(appErr)
+	}
+
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		respondErr(errs.InvalidArgument, err, "")
+		return
+	}
+
+	name := r.FormValue("name")
+	account := r.FormValue("account")
+	email := r.FormValue("email")
+	password := r.FormValue("password")
+	passwordConfirm := r.FormValue("password_confirm")
+
+	// Validation
+	for _, v := range []struct {
+		cond bool
+		msg  string
+	}{
+		{name == "", "name is required"},
+		{len(name) < 3, "name must be at least 3 characters"},
+		{len(name) > 40, "name must be at most 40 characters"},
+		{account == "", "account is required"},
+		{len(account) < 6, "account must be at least 6 characters"},
+		{len(account) > 30, "account must be at most 30 characters"},
+		{email == "", "email is required"},
+		{password == "", "password is required"},
+		{len(password) < 8, "password must be at least 8 characters"},
+		{len(password) > 32, "password must be at most 32 characters"},
+		{passwordConfirm == "", "password confirmation is required"},
+		{password != passwordConfirm, "passwords do not match"},
+	} {
+		if v.cond {
+			respondErr(errs.InvalidArgument, nil, v.msg)
+			return
+		}
+	}
+
+	ctx := r.Context()
+
+	// Check email uniqueness
+	if _, err := s.sqldb.GetUserByEmail(ctx, email); err == nil {
+		respondErr(errs.AlreadyExists, nil, "user with email %s already exists", email)
+		return
+	} else if !errors.Is(err, sqldb.ErrDBNotFound) {
+		respondErr(errs.Internal, err, "")
+		return
+	}
+
+	// Check account uniqueness
+	if _, err := s.sqldb.GetUserByAccount(ctx, account); err == nil {
+		respondErr(errs.AlreadyExists, nil, "user with account %s already exists", account)
+		return
+	} else if !errors.Is(err, sqldb.ErrDBNotFound) {
+		respondErr(errs.Internal, err, "")
+		return
+	}
+
+	hashedPassword, err := hash.NewHashService().HashPassword(password)
+	if err != nil {
+		respondErr(errs.Internal, err, "")
+		return
+	}
+
+	user, err := s.sqldb.CreateUser(ctx, models.NewUser{
+		Name:     name,
+		Account:  account,
+		Email:    email,
+		Password: []byte(hashedPassword),
+	})
+	if err != nil {
+		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
+			respondErr(errs.AlreadyExists, nil, "user already exists")
+			return
+		}
+		respondErr(errs.Internal, err, "")
+		return
+	}
+
+	tokens, err := jwt.NewTokenService().GenerateToken(user.ID, user.Email)
+	if err != nil {
+		respondErr(errs.Internal, err, "")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message":      "Registration successful",
+		"access_token": tokens.AccessToken,
+	})
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	respondErr := func(code errs.ErrCode, err error, msg string, args ...any) {
+		var appErr *errs.Error
+		if msg != "" {
+			appErr = errs.Newf(code, msg, args...)
+		} else {
+			appErr = errs.New(code, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(appErr.HTTPStatus())
+		json.NewEncoder(w).Encode(appErr)
+	}
+
 	var credentials struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
-		appErr := errs.New(errs.InvalidArgument, err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(appErr.HTTPStatus())
-		json.NewEncoder(w).Encode(appErr)
+		respondErr(errs.InvalidArgument, err, "")
 		return
 	}
 
-	// TODO: Implement authentication logic
-	// - Validate credentials against database
-	// - Generate access token and refresh token
-	// - Return tokens to client
+	// Validation
+	for _, v := range []struct {
+		cond bool
+		msg  string
+	}{
+		{credentials.Email == "", "email is required"},
+		{credentials.Password == "", "password is required"},
+	} {
+		if v.cond {
+			respondErr(errs.InvalidArgument, nil, v.msg)
+			return
+		}
+	}
 
-	resp := map[string]string{
+	ctx := r.Context()
+
+	// Get user by email
+	user, err := s.sqldb.GetUserByEmail(ctx, credentials.Email)
+	if err != nil {
+		if errors.Is(err, sqldb.ErrDBNotFound) {
+			respondErr(errs.Unauthenticated, nil, "invalid email or password")
+			return
+		}
+		respondErr(errs.Internal, err, "")
+		return
+	}
+
+	// Verify password
+	hashService := hash.NewHashService()
+	if !hashService.CheckPasswordHash(credentials.Password, string(user.Password)) {
+		respondErr(errs.Unauthenticated, nil, "invalid email or password")
+		return
+	}
+
+	// Generate tokens
+	tokens, err := jwt.NewTokenService().GenerateToken(user.ID, user.Email)
+	if err != nil {
+		respondErr(errs.Internal, err, "")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
 		"message":       "Login successful",
-		"access_token":  "placeholder_access_token",
-		"refresh_token": "placeholder_refresh_token",
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("Failed to write response: %v", err)
-	}
-}
-
-func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10 MB max
-		appErr := errs.New(errs.InvalidArgument, err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(appErr.HTTPStatus())
-		json.NewEncoder(w).Encode(appErr)
-		return
-	}
-
-	newUser := NewUser{
-		Name:            r.FormValue("name"),
-		Account:         r.FormValue("account"),
-		Email:           r.FormValue("email"),
-		Password:        r.FormValue("password"),
-		PasswordConfirm: r.FormValue("password_confirm"),
-	}
-
-	// TODO: Implement registration logic
-	// - Validate newUser using validator (validate tags)
-	// - Check password and password_confirm match
-	// - Check if user already exists
-	// - Hash password
-	// - Create user in database
-	// - Generate access token and refresh token
-	// - Return tokens to client
-
-	_ = newUser
-
-	resp := map[string]string{
-		"message":       "Registration successful",
-		"access_token":  "placeholder_access_token",
-		"refresh_token": "placeholder_refresh_token",
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("Failed to write response: %v", err)
-	}
+		"access_token":  tokens.AccessToken,
+		"refresh_token": tokens.RefreshToken,
+	})
 }
 
 func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
@@ -277,7 +590,7 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	// - Fetch user from database
 	// - Return user data (excluding sensitive fields like password)
 
-	user := User{
+	user := models.User{
 		ID:        "placeholder_id",
 		Name:      "John Doe",
 		Account:   "johndoe",
@@ -314,7 +627,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	// - Update user in database
 	// - Return updated user data
 
-	user := User{
+	user := models.User{
 		ID:        "placeholder_id",
 		Name:      "John Doe Updated",
 		Account:   "johndoe",
@@ -359,7 +672,7 @@ func (s *Server) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 	// - Fetch user by account from database
 	// - Return user profile (may include more details for authenticated users)
 
-	user := User{
+	user := models.User{
 		ID:        "placeholder_id",
 		Name:      "Jane Doe",
 		Account:   account,
@@ -429,12 +742,12 @@ func (s *Server) handleSearchUsers(w http.ResponseWriter, r *http.Request) {
 	// - Return matching users (public fields only)
 
 	results := struct {
-		Users  []User `json:"users"`
-		Total  int    `json:"total"`
-		Limit  int    `json:"limit"`
-		Offset int    `json:"offset"`
+		Users  []models.User `json:"users"`
+		Total  int           `json:"total"`
+		Limit  int           `json:"limit"`
+		Offset int           `json:"offset"`
 	}{
-		Users: []User{
+		Users: []models.User{
 			{
 				ID:        "1",
 				Name:      "John Doe",

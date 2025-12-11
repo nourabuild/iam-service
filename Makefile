@@ -21,7 +21,7 @@ API_IMAGE       := $(BASE_IMAGE_NAME)/$(SERVICE_APP):$(VERSION)
 
 run:
 	lsof -i :8080 | awk 'NR!=1 {print $$2}' | xargs -r kill -9
-	go run ./cmd/meetx/main.go
+	go run ./cmd/api/main.go
 
 # ==============================================================================
 # Modules support
