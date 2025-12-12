@@ -394,18 +394,36 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 // =============================================================================
 
 func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement get current user logic
-	// - Get user ID from request context (requires auth middleware)
-	// - Fetch user from database
-	// - Return user data (excluding sensitive fields like password)
+	respondErr := func(code errs.ErrCode, err error, msg string, args ...any) {
+		var appErr *errs.Error
+		if msg != "" {
+			appErr = errs.Newf(code, msg, args...)
+		} else {
+			appErr = errs.New(code, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(appErr.HTTPStatus())
+		json.NewEncoder(w).Encode(appErr)
+	}
 
-	user := models.User{
-		ID:        "placeholder_id",
-		Name:      "John Doe",
-		Account:   "johndoe",
-		Email:     "john@example.com",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+	// Get claims from context (set by auth middleware)
+	claims, ok := GetClaimsFromContext(r.Context())
+	if !ok {
+		respondErr(errs.Unauthenticated, nil, "user not authenticated")
+		return
+	}
+
+	ctx := r.Context()
+
+	// Fetch user from database
+	user, err := s.sqldb.GetUserById(ctx, claims.UserID)
+	if err != nil {
+		if errors.Is(err, sqldb.ErrDBNotFound) {
+			respondErr(errs.NotFound, nil, "user not found")
+			return
+		}
+		respondErr(errs.Internal, err, "")
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")

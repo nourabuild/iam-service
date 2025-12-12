@@ -36,15 +36,15 @@ func (s *Server) registerUserRoutes(mux *http.ServeMux) {
 	// Password management
 	mux.HandleFunc("POST /api/v1/users/password/forgot", s.handlePasswordForgotRequest)
 	mux.HandleFunc("POST /api/v1/users/password/forgot/confirm", s.handlePasswordForgotConfirm)
-	mux.HandleFunc("POST /api/v1/users/password/reset", s.handlePasswordReset)
+	mux.Handle("POST /api/v1/users/password/reset", s.authMiddleware(http.HandlerFunc(s.handlePasswordReset)))
 
-	// Current user operations
-	mux.HandleFunc("GET /api/v1/users/me", s.handleGetCurrentUser)
-	mux.HandleFunc("PATCH /api/v1/users/me", s.handleUpdateCurrentUser)
-	mux.HandleFunc("DELETE /api/v1/users/me", s.handleDeleteCurrentUser)
+	// Current user operations (protected)
+	mux.Handle("GET /api/v1/users/me", s.authMiddleware(http.HandlerFunc(s.handleGetCurrentUser)))
+	mux.Handle("PATCH /api/v1/users/me", s.authMiddleware(http.HandlerFunc(s.handleUpdateCurrentUser)))
+	mux.Handle("DELETE /api/v1/users/me", s.authMiddleware(http.HandlerFunc(s.handleDeleteCurrentUser)))
 
 	// User lookup and search
-	mux.HandleFunc("GET /api/v1/users/{account}/profile", s.handleGetUserProfile)
+	mux.Handle("GET /api/v1/users/{account}/profile", s.authMiddleware(http.HandlerFunc(s.handleGetUserProfile)))
 	mux.HandleFunc("GET /api/v1/users/{account}/public", s.handleGetPublicUserProfile)
 	mux.HandleFunc("POST /api/v1/users/search", s.handleSearchUsers)
 }
