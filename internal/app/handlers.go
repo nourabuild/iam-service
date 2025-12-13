@@ -1,4 +1,4 @@
-package server
+package app
 
 import (
 	"encoding/json"
@@ -15,31 +15,33 @@ import (
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 	"github.com/nourabuild/iam-service/internal/services/hash"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
+	"github.com/nourabuild/iam-service/internal/services/mailtrap"
+	"github.com/nourabuild/iam-service/internal/services/sentry"
 )
 
-// type app struct {
-// 	db       sqldb.Service
-// 	hash     *hash.HashService
-// 	token    *jwt.TokenService
-// 	mailtrap *mailtrap.MailtrapService
-// 	sentry   *sentry.SentryService
-// }
+type App struct {
+	db       sqldb.Service
+	hash     *hash.HashService
+	jwt      *jwt.TokenService
+	mailtrap *mailtrap.MailtrapService
+	sentry   *sentry.SentryService
+}
 
-// func newApp(
-// 	db sqldb.Service,
-// 	hash *hash.HashService,
-// 	token *jwt.TokenService,
-// 	mailtrap *mailtrap.MailtrapService,
-// 	sentry *sentry.SentryService,
-// ) *app {
-// 	return &app{
-// 		db:       db,
-// 		hash:     hash,
-// 		token:    token,
-// 		mailtrap: mailtrap,
-// 		sentry:   sentry,
-// 	}
-// }
+func NewApp(
+	db sqldb.Service,
+	hash *hash.HashService,
+	jwt *jwt.TokenService,
+	mailtrap *mailtrap.MailtrapService,
+	sentry *sentry.SentryService,
+) *App {
+	return &App{
+		db:       db,
+		hash:     hash,
+		jwt:      jwt,
+		mailtrap: mailtrap,
+		sentry:   sentry,
+	}
+}
 
 func JSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -55,9 +57,9 @@ func Error(w http.ResponseWriter, appErr *errs.Error) {
 // Health Check Handlers
 // =============================================================================
 
-func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 	// Database check
-	resp, err := json.Marshal(s.sqldb.Health())
+	resp, err := json.Marshal(a.db.Health())
 	if err != nil {
 		http.Error(w, "Failed to marshal health check response", http.StatusInternalServerError)
 		return
@@ -68,7 +70,7 @@ func (s *Server) handleReadinessCheck(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleLivenessCheck(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandleLivenessCheck(w http.ResponseWriter, r *http.Request) {
 	// API check
 	host, err := os.Hostname()
 	if err != nil {
@@ -97,7 +99,7 @@ func (s *Server) handleLivenessCheck(w http.ResponseWriter, r *http.Request) {
 // Auth Handlers
 // =============================================================================
 
-func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	respondErr := func(code errs.ErrCode, err error, msg string, args ...any) {
 		var appErr *errs.Error
 		if msg != "" {
@@ -148,7 +150,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Check email uniqueness
-	if _, err := s.sqldb.GetUserByEmail(ctx, email); err == nil {
+	if _, err := a.db.GetUserByEmail(ctx, email); err == nil {
 		respondErr(errs.AlreadyExists, nil, "user with email %s already exists", email)
 		return
 	} else if !errors.Is(err, sqldb.ErrDBNotFound) {
@@ -157,7 +159,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check account uniqueness
-	if _, err := s.sqldb.GetUserByAccount(ctx, account); err == nil {
+	if _, err := a.db.GetUserByAccount(ctx, account); err == nil {
 		respondErr(errs.AlreadyExists, nil, "user with account %s already exists", account)
 		return
 	} else if !errors.Is(err, sqldb.ErrDBNotFound) {
@@ -171,7 +173,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.sqldb.CreateUser(ctx, models.NewUser{
+	user, err := a.db.CreateUser(ctx, models.NewUser{
 		Name:     name,
 		Account:  account,
 		Email:    email,
@@ -200,7 +202,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	respondErr := func(code errs.ErrCode, err error, msg string, args ...any) {
 		var appErr *errs.Error
 		if msg != "" {
@@ -240,7 +242,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Get user by email
-	user, err := s.sqldb.GetUserByEmail(ctx, credentials.Email)
+	user, err := a.db.GetUserByEmail(ctx, credentials.Email)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			respondErr(errs.Unauthenticated, nil, "invalid email or password")
@@ -272,7 +274,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	var tokenReq struct {
 		RefreshToken string `json:"refresh_token"`
 	}
@@ -305,7 +307,7 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 // Password Management Handlers
 // =============================================================================
 
-func (s *Server) handlePasswordForgotRequest(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandlePasswordForgotRequest(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Email string `json:"email"`
 	}
@@ -336,7 +338,7 @@ func (s *Server) handlePasswordForgotRequest(w http.ResponseWriter, r *http.Requ
 	}
 }
 
-func (s *Server) handlePasswordForgotConfirm(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandlePasswordForgotConfirm(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Token       string `json:"token"`
 		NewPassword string `json:"new_password"`
@@ -368,7 +370,7 @@ func (s *Server) handlePasswordForgotConfirm(w http.ResponseWriter, r *http.Requ
 	}
 }
 
-func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandlePasswordReset(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		CurrentPassword string `json:"current_password"`
 		NewPassword     string `json:"new_password"`
@@ -404,7 +406,7 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 // Current User Handlers
 // =============================================================================
 
-func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	respondErr := func(code errs.ErrCode, err error, msg string, args ...any) {
 		var appErr *errs.Error
 		if msg != "" {
@@ -427,7 +429,7 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Fetch user from database
-	user, err := s.sqldb.GetUserById(ctx, claims.UserID)
+	user, err := a.db.GetUserById(ctx, claims.UserID)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			respondErr(errs.NotFound, nil, "user not found")
@@ -443,7 +445,7 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandleUpdateCurrentUser(w http.ResponseWriter, r *http.Request) {
 	var updates struct {
 		Name    *string `json:"name,omitempty"`
 		Account *string `json:"account,omitempty"`
@@ -480,7 +482,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-func (s *Server) handleDeleteCurrentUser(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandleDeleteCurrentUser(w http.ResponseWriter, r *http.Request) {
 	// TODO: Implement delete current user logic
 	// - Get user ID from request context (requires auth middleware)
 	// - Optionally require password confirmation
@@ -495,7 +497,7 @@ func (s *Server) handleDeleteCurrentUser(w http.ResponseWriter, r *http.Request)
 // User Profile Handlers
 // =============================================================================
 
-func (s *Server) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 	account := r.PathValue("account")
 	if account == "" {
 		appErr := errs.Newf(errs.InvalidArgument, "account parameter is required")
@@ -525,7 +527,7 @@ func (s *Server) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleGetPublicUserProfile(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandleGetPublicUserProfile(w http.ResponseWriter, r *http.Request) {
 	account := r.PathValue("account")
 	if account == "" {
 		appErr := errs.Newf(errs.InvalidArgument, "account parameter is required")
@@ -553,7 +555,7 @@ func (s *Server) handleGetPublicUserProfile(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (s *Server) handleSearchUsers(w http.ResponseWriter, r *http.Request) {
+func (a *App) HandleSearchUsers(w http.ResponseWriter, r *http.Request) {
 	var searchReq struct {
 		Query  string `json:"query"`
 		Limit  int    `json:"limit,omitempty"`
@@ -604,53 +606,4 @@ func (s *Server) handleSearchUsers(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(results); err != nil {
 		log.Printf("Failed to write response: %v", err)
 	}
-}
-
-// ----------------------------------------------------------------------------
-// Route Registration
-// ----------------------------------------------------------------------------
-
-// RegisterRoutes configures all application routes and returns the HTTP handler
-func (s *Server) RegisterRoutes() http.Handler {
-	mux := http.NewServeMux()
-
-	s.registerHealthRoutes(mux)
-	s.registerAuthRoutes(mux)
-	s.registerUserRoutes(mux)
-
-	return middleware.WrapMiddleware(mux,
-		middleware.CorsMiddleware,
-		middleware.LoggingMiddleware,
-	)
-}
-
-// registerHealthRoutes configures health check endpoints
-func (s *Server) registerHealthRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/health/readiness", s.handleReadinessCheck)
-	mux.HandleFunc("GET /api/v1/health/liveness", s.handleLivenessCheck)
-}
-
-// registerAuthRoutes configures authentication endpoints
-func (s *Server) registerAuthRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
-	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
-	mux.HandleFunc("POST /api/v1/auth/refresh", s.handleTokenRefresh)
-}
-
-// registerUserRoutes configures user management endpoints
-func (s *Server) registerUserRoutes(mux *http.ServeMux) {
-	// Password management
-	mux.HandleFunc("POST /api/v1/users/password/forgot", s.handlePasswordForgotRequest)
-	mux.HandleFunc("POST /api/v1/users/password/forgot/confirm", s.handlePasswordForgotConfirm)
-	mux.Handle("POST /api/v1/users/password/reset", middleware.AuthMiddleware(http.HandlerFunc(s.handlePasswordReset)))
-
-	// Current user operations (protected)
-	mux.Handle("GET /api/v1/users/me", middleware.AuthMiddleware(http.HandlerFunc(s.handleGetCurrentUser)))
-	mux.Handle("PATCH /api/v1/users/me", middleware.AuthMiddleware(http.HandlerFunc(s.handleUpdateCurrentUser)))
-	mux.Handle("DELETE /api/v1/users/me", middleware.AuthMiddleware(http.HandlerFunc(s.handleDeleteCurrentUser)))
-
-	// User lookup and search
-	mux.Handle("GET /api/v1/users/{account}/profile", middleware.AuthMiddleware(http.HandlerFunc(s.handleGetUserProfile)))
-	mux.HandleFunc("GET /api/v1/users/{account}/public", s.handleGetPublicUserProfile)
-	mux.HandleFunc("POST /api/v1/users/search", s.handleSearchUsers)
 }
