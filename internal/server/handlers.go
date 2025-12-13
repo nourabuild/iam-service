@@ -9,8 +9,9 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/nourabuild/iam-service/internal/models"
 	"github.com/nourabuild/iam-service/internal/sdk/errs"
+	"github.com/nourabuild/iam-service/internal/sdk/middleware"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 	"github.com/nourabuild/iam-service/internal/services/hash"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
@@ -39,6 +40,16 @@ import (
 // 		sentry:   sentry,
 // 	}
 // }
+
+func JSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func Error(w http.ResponseWriter, appErr *errs.Error) {
+	JSON(w, appErr.HTTPStatus(), appErr)
+}
 
 // =============================================================================
 // Health Check Handlers
@@ -407,7 +418,7 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get claims from context (set by auth middleware)
-	claims, ok := GetClaimsFromContext(r.Context())
+	claims, ok := middleware.GetClaimsFromContext(r.Context())
 	if !ok {
 		respondErr(errs.Unauthenticated, nil, "user not authenticated")
 		return
@@ -593,4 +604,53 @@ func (s *Server) handleSearchUsers(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(results); err != nil {
 		log.Printf("Failed to write response: %v", err)
 	}
+}
+
+// ----------------------------------------------------------------------------
+// Route Registration
+// ----------------------------------------------------------------------------
+
+// RegisterRoutes configures all application routes and returns the HTTP handler
+func (s *Server) RegisterRoutes() http.Handler {
+	mux := http.NewServeMux()
+
+	s.registerHealthRoutes(mux)
+	s.registerAuthRoutes(mux)
+	s.registerUserRoutes(mux)
+
+	return middleware.WrapMiddleware(mux,
+		middleware.CorsMiddleware,
+		middleware.LoggingMiddleware,
+	)
+}
+
+// registerHealthRoutes configures health check endpoints
+func (s *Server) registerHealthRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/health/readiness", s.handleReadinessCheck)
+	mux.HandleFunc("GET /api/v1/health/liveness", s.handleLivenessCheck)
+}
+
+// registerAuthRoutes configures authentication endpoints
+func (s *Server) registerAuthRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
+	mux.HandleFunc("POST /api/v1/auth/refresh", s.handleTokenRefresh)
+}
+
+// registerUserRoutes configures user management endpoints
+func (s *Server) registerUserRoutes(mux *http.ServeMux) {
+	// Password management
+	mux.HandleFunc("POST /api/v1/users/password/forgot", s.handlePasswordForgotRequest)
+	mux.HandleFunc("POST /api/v1/users/password/forgot/confirm", s.handlePasswordForgotConfirm)
+	mux.Handle("POST /api/v1/users/password/reset", middleware.AuthMiddleware(http.HandlerFunc(s.handlePasswordReset)))
+
+	// Current user operations (protected)
+	mux.Handle("GET /api/v1/users/me", middleware.AuthMiddleware(http.HandlerFunc(s.handleGetCurrentUser)))
+	mux.Handle("PATCH /api/v1/users/me", middleware.AuthMiddleware(http.HandlerFunc(s.handleUpdateCurrentUser)))
+	mux.Handle("DELETE /api/v1/users/me", middleware.AuthMiddleware(http.HandlerFunc(s.handleDeleteCurrentUser)))
+
+	// User lookup and search
+	mux.Handle("GET /api/v1/users/{account}/profile", middleware.AuthMiddleware(http.HandlerFunc(s.handleGetUserProfile)))
+	mux.HandleFunc("GET /api/v1/users/{account}/public", s.handleGetPublicUserProfile)
+	mux.HandleFunc("POST /api/v1/users/search", s.handleSearchUsers)
 }

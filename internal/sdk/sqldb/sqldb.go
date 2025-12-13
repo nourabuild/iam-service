@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/nourabuild/iam-service/internal/models"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/joho/godotenv/autoload"

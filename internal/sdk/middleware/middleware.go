@@ -1,4 +1,4 @@
-package server
+package middleware
 
 import (
 	"context"
@@ -27,7 +27,7 @@ func WrapMiddleware(h http.Handler, middlewares ...MidFunc) http.Handler {
 // CORS
 // --------------------------------------
 
-func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+func CorsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers
 		w.Header().Set("Access-Control-Allow-Origin", "*") // Replace "*" with specific origins if needed
@@ -50,15 +50,16 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 // Logging
 // --------------------------------------
 
-func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
+func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Log request details
 		ip := r.RemoteAddr
 		proto := r.Proto
 		method := r.Method
 		uri := r.URL.RequestURI()
+		user_agent := r.UserAgent()
 
-		log.Printf("IP: %s, Protocol: %s, Method: %s, URI: %s", ip, proto, method, uri)
+		log.Printf("IP: %s, Protocol: %s, Method: %s, URI: %s, User-Agent: %s", ip, proto, method, uri, user_agent)
 
 		next.ServeHTTP(w, r)
 	})
@@ -76,8 +77,8 @@ const (
 	claimsKey    = claimsContextKey("claims")
 )
 
-// authMiddleware validates JWT token and adds claims to context
-func (s *Server) authMiddleware(next http.Handler) http.Handler {
+// AuthMiddleware validates JWT token and adds claims to context
+func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Get Authorization header
 		authHeader := r.Header.Get("Authorization")
