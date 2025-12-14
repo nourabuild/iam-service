@@ -22,6 +22,8 @@ import (
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 )
 
+var build string
+
 func main() {
 	// 1. Optimized Logging: Defaulting to JSON for production
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -73,7 +75,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	wg.Go(func() {
-		logger.Info("server starting", "addr", srv.Addr)
+		logger.Info("server starting", "addr", srv.Addr, "build", build)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("listen and serve", "error", err)
 			stop() // Cancel context if server crashes
