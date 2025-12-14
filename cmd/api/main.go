@@ -15,6 +15,7 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/nourabuild/iam-service/internal/app"
+	"github.com/nourabuild/iam-service/internal/sdk/otel"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 	"github.com/nourabuild/iam-service/internal/services/hash"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
@@ -32,19 +33,33 @@ func run() error {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	logger.Info("GOMAXPROCS", "cpu", runtime.GOMAXPROCS(0))
 
-	// 1. Initialize Database
+	// 1. Initialize Tracing
+	traceConfig := otel.Config{
+		ServiceName: "iam-service",
+		Host:        os.Getenv("OTEL_EXPORTER_HOST"),
+		Probability: 1.0,
+	}
+	traceProvider, teardown, err := otel.InitTracing(traceConfig)
+	if err != nil {
+		return fmt.Errorf("initializing tracing: %w", err)
+	}
+	defer teardown(context.Background())
+
+	tracer := traceProvider.Tracer("iam-service")
+
+	// 2. Initialize Database
 	dbService := sqldb.New()
 
-	// 2. Initialize Services
+	// 3. Initialize Services
 	hashService := hash.NewHashService()
 	jwtService := jwt.NewTokenService()
 	mailtrapService := mailtrap.NewMailtrapService()
 	sentryService := sentry.NewSentryService()
 
-	// 3. Initialize App
-	app := app.NewApp(dbService, hashService, jwtService, mailtrapService, sentryService)
+	// 4. Initialize App
+	app := app.NewApp(dbService, hashService, jwtService, mailtrapService, sentryService, tracer)
 
-	// 4. Configure Server
+	// 5. Configure Server
 	port, _ := strconv.Atoi(os.Getenv("PORT"))
 	if port == 0 {
 		port = 8080 // Fallback default
@@ -58,7 +73,7 @@ func run() error {
 		WriteTimeout: 30 * time.Second,
 	}
 
-	// 5. Graceful Shutdown Logic
+	// 6. Graceful Shutdown Logic
 	done := make(chan bool, 1)
 	go func() {
 		sigChan := make(chan os.Signal, 1)
@@ -76,9 +91,9 @@ func run() error {
 		done <- true
 	}()
 
-	// 6. Start Server
+	// 7. Start Server
 	logger.Info("Starting server", "port", srv.Addr)
-	err := srv.ListenAndServe()
+	err = srv.ListenAndServe()
 	if err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("http server error: %w", err)
 	}

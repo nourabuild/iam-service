@@ -17,10 +17,12 @@ import (
 	"github.com/nourabuild/iam-service/internal/services/jwt"
 	"github.com/nourabuild/iam-service/internal/services/mailtrap"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type App struct {
 	db       sqldb.Service
+	tracer   trace.Tracer
 	hash     *hash.HashService
 	jwt      *jwt.TokenService
 	mailtrap *mailtrap.MailtrapService
@@ -29,6 +31,7 @@ type App struct {
 
 func NewApp(
 	db sqldb.Service,
+	tracer trace.Tracer,
 	hash *hash.HashService,
 	jwt *jwt.TokenService,
 	mailtrap *mailtrap.MailtrapService,
@@ -36,6 +39,7 @@ func NewApp(
 ) *App {
 	return &App{
 		db:       db,
+		tracer:   tracer,
 		hash:     hash,
 		jwt:      jwt,
 		mailtrap: mailtrap,
@@ -142,7 +146,7 @@ func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		{password != passwordConfirm, "passwords do not match"},
 	} {
 		if v.cond {
-			respondErr(errs.InvalidArgument, nil, v.msg)
+			respondErr(errs.InvalidArgument, nil, "%s", v.msg)
 			return
 		}
 	}
@@ -234,7 +238,7 @@ func (a *App) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		{credentials.Password == "", "password is required"},
 	} {
 		if v.cond {
-			respondErr(errs.InvalidArgument, nil, v.msg)
+			respondErr(errs.InvalidArgument, nil, "%s", v.msg)
 			return
 		}
 	}

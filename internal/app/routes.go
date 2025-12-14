@@ -19,6 +19,7 @@ func (a *App) RegisterRoutes() http.Handler {
 	a.registerUserRoutes(mux)
 
 	return middleware.WrapMiddleware(mux,
+		middleware.OtelMiddleware(a.tracer),
 		middleware.CorsMiddleware,
 		middleware.LoggingMiddleware,
 	)
