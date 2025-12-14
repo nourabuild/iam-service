@@ -29,6 +29,8 @@ go.work.sum
 *~
 .DS_Store
 
+zarf/k8s
+
 # Environment files
 .env
 .env.local
@@ -50,3 +52,4 @@ iam-service
 
 
 vendor
+
