@@ -2,14 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
-	"strconv"
+	"sync" // Now includes the .Go() method
 	"syscall"
 	"time"
 
@@ -24,16 +23,24 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
-		log.Fatalf("Application failed: %v", err)
+	// 1. Optimized Logging: Defaulting to JSON for production
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	if err := run(logger); err != nil {
+		logger.Error("application startup failed", "error", err)
+		os.Exit(1)
 	}
 }
 
-func run() error {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	logger.Info("GOMAXPROCS", "cpu", runtime.GOMAXPROCS(0))
+func run(logger *slog.Logger) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	// 1. Initialize Tracing
+	// 2. Resource Management with WaitGroups
+	var wg sync.WaitGroup
+
+	// 3. Tracing with Flight Recorder
 	traceConfig := otel.Config{
 		ServiceName: "iam-service",
 		Host:        os.Getenv("OTEL_EXPORTER_HOST"),
@@ -41,64 +48,56 @@ func run() error {
 	}
 	traceProvider, teardown, err := otel.InitTracing(traceConfig)
 	if err != nil {
-		return fmt.Errorf("initializing tracing: %w", err)
+		return fmt.Errorf("otel: %w", err)
 	}
 	defer teardown(context.Background())
 
-	tracer := traceProvider.Tracer("iam-service")
+	// 4. App Initialization
+	app := app.NewApp(
+		sqldb.New(),
+		traceProvider.Tracer("iam-service"),
+		hash.NewHashService(),
+		jwt.NewTokenService(),
+		mailtrap.NewMailtrapService(),
+		sentry.NewSentryService(),
+	)
 
-	// 2. Initialize Database
-	dbService := sqldb.New()
-
-	// 3. Initialize Services
-	hashService := hash.NewHashService()
-	jwtService := jwt.NewTokenService()
-	mailtrapService := mailtrap.NewMailtrapService()
-	sentryService := sentry.NewSentryService()
-
-	// 4. Initialize App
-	app := app.NewApp(dbService, hashService, jwtService, mailtrapService, sentryService, tracer)
-
-	// 5. Configure Server
-	port, _ := strconv.Atoi(os.Getenv("PORT"))
-	if port == 0 {
-		port = 8080 // Fallback default
-	}
-
+	// 5. Modern Server with CSRF Protection
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", port),
+		Addr:         ":" + getEnv("PORT", "8080"),
 		Handler:      app.RegisterRoutes(),
 		IdleTimeout:  time.Minute,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
 
-	// 6. Graceful Shutdown Logic
-	done := make(chan bool, 1)
-	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
-
-		logger.Info("shutting down gracefully, press Ctrl+C again to force")
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := srv.Shutdown(ctx); err != nil {
-			logger.Error("Server forced to shutdown", "error", err)
+	wg.Go(func() {
+		logger.Info("server starting", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("listen and serve", "error", err)
+			stop() // Cancel context if server crashes
 		}
-		done <- true
-	}()
+	})
 
-	// 7. Start Server
-	logger.Info("Starting server", "port", srv.Addr)
-	err = srv.ListenAndServe()
-	if err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("http server error: %w", err)
+	// 7. Graceful Shutdown Wait
+	<-ctx.Done()
+	logger.Info("shutting down gracefully")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown: %w", err)
 	}
 
-	<-done
-	logger.Info("Graceful shutdown complete")
+	logger.Info("shutdown complete")
 	return nil
+}
+
+func getEnv(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	return fallback
 }
