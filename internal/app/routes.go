@@ -18,7 +18,15 @@ func (a *App) RegisterRoutes() http.Handler {
 	a.registerAuthRoutes(mux)
 	a.registerUserRoutes(mux)
 
+	// Built-in CSRF Protection
+
+	// csrf := http.NewCrossOriginProtection()
+	// csrf.AddTrustedOrigin("http://localhost:8080")
+	// csrf.AddTrustedOrigin("https://api.meets.noura.software")
+	// return csrf.Handler
+
 	return middleware.WrapMiddleware(mux,
+		middleware.OtelMiddleware(a.tracer),
 		middleware.CorsMiddleware,
 		middleware.LoggingMiddleware,
 	)

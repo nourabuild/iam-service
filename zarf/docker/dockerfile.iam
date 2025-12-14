@@ -1,0 +1,38 @@
+# Build stage
+FROM golang:1.25-alpine AS build_iam
+
+ENV CGO_ENABLED=0
+ARG BUILD_REF
+
+WORKDIR /iam-service
+
+## Cache deps
+COPY go.mod go.sum ./
+RUN go mod download
+
+## Copy source
+COPY . .
+
+## Build binary
+WORKDIR /iam-service/cmd/api
+RUN go build -o /iam-service/api \
+    -ldflags "-s -w -X main.build=${BUILD_REF}"
+
+# Runtime stage
+FROM gcr.io/distroless/static-debian13:nonroot
+
+ARG BUILD_DATE
+ARG BUILD_REF
+
+LABEL org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.title="iam-service" \
+      org.opencontainers.image.authors="Shohin Abdulkhamidov <shohin@noura.software>" \
+      org.opencontainers.image.source="https://github.com/nourabuild/iam-service" \
+      org.opencontainers.image.revision="${BUILD_REF}" \
+      org.opencontainers.image.vendor="Noura"
+
+WORKDIR /iam-service
+
+COPY --from=build_iam /iam-service/api /iam-service/api
+
+ENTRYPOINT ["/iam-service/api"]

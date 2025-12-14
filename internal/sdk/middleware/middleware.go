@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/nourabuild/iam-service/internal/sdk/errs"
+	"github.com/nourabuild/iam-service/internal/sdk/otel"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type MidFunc func(http.Handler) http.Handler
@@ -127,4 +129,19 @@ func GetClaimsFromContext(ctx context.Context) (*jwt.Claims, bool) {
 // SetClaimsContext sets claims in context (for testing purposes)
 func SetClaimsContext(ctx context.Context, claims *jwt.Claims) context.Context {
 	return context.WithValue(ctx, claimsKey, claims)
+}
+
+// --------------------------------------
+// OpenTelemetry
+// --------------------------------------
+
+func OtelMiddleware(tracer trace.Tracer) MidFunc {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := otel.InjectTracing(r.Context(), tracer)
+			r = r.WithContext(ctx)
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
