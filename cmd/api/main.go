@@ -19,6 +19,7 @@ import (
 	"github.com/nourabuild/iam-service/internal/services/hash"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
 	"github.com/nourabuild/iam-service/internal/services/mailtrap"
+	"github.com/nourabuild/iam-service/internal/services/minio"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 	"github.com/nourabuild/iam-service/internal/services/webauthn"
 )
@@ -64,6 +65,7 @@ func run(logger *slog.Logger) error {
 		mailtrap.NewMailtrapService(),
 		sentry.NewSentryService(),
 		webauthn.NewWebauthnService(),
+		minio.NewMinioService(),
 	)
 
 	// 5. Modern Server with CSRF Protection
