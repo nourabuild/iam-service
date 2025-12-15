@@ -20,6 +20,7 @@ import (
 	"github.com/nourabuild/iam-service/internal/services/jwt"
 	"github.com/nourabuild/iam-service/internal/services/mailtrap"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
+	"github.com/nourabuild/iam-service/internal/services/webauthn"
 )
 
 var build string
@@ -62,6 +63,7 @@ func run(logger *slog.Logger) error {
 		jwt.NewTokenService(),
 		mailtrap.NewMailtrapService(),
 		sentry.NewSentryService(),
+		webauthn.NewWebauthnService(),
 	)
 
 	// 5. Modern Server with CSRF Protection

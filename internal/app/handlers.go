@@ -17,6 +17,7 @@ import (
 	"github.com/nourabuild/iam-service/internal/services/jwt"
 	"github.com/nourabuild/iam-service/internal/services/mailtrap"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
+	"github.com/nourabuild/iam-service/internal/services/webauthn"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -27,6 +28,7 @@ type App struct {
 	jwt      *jwt.TokenService
 	mailtrap *mailtrap.MailtrapService
 	sentry   *sentry.SentryService
+	webauthn *webauthn.WebauthnService
 }
 
 func NewApp(
@@ -36,6 +38,7 @@ func NewApp(
 	jwt *jwt.TokenService,
 	mailtrap *mailtrap.MailtrapService,
 	sentry *sentry.SentryService,
+	webauthn *webauthn.WebauthnService,
 ) *App {
 	return &App{
 		db:       db,
@@ -44,6 +47,7 @@ func NewApp(
 		jwt:      jwt,
 		mailtrap: mailtrap,
 		sentry:   sentry,
+		webauthn: webauthn,
 	}
 }
 
