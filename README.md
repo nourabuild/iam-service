@@ -2,7 +2,12 @@
 
 <img width="718" height="656" alt="image" src="https://github.com/user-attachments/assets/b2326c6e-354a-42d3-8987-40e4c77738bb" />
 
-One Paragraph of project description goes here
+cmd/api/main.go - serves as the entry point responsible for service initialization and graceful shutdown
+internal/app - handles request handlers and route registration
+internal/sdk - tools
+internal/services - encapsulating service capabilities
+
+Dependency Injection, Service-Oriented Design
 
 ## Goals
 
