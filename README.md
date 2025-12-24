@@ -12,8 +12,6 @@ This repository template MUST provide a standardized foundation for microservice
 - **Observability** - Built-in metrics, logging, and tracing support
 - **Production Features** - Health checks, graceful shutdown, and configuration management
 
-> For developers to be able to concentrate and speed up on feature building
-
 ## Getting Started
 
 These instructions will get you a copy of the project up and running on your local machine for development and testing purposes. See deployment for notes on how to deploy the project on a live system.
