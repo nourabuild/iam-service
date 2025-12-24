@@ -1,6 +1,6 @@
-// Experimental feature to enable passkeys
-// * https://github.com/go-webauthn/webauthn
-
+// Package webauthn provides WebAuthn/FIDO2 authentication support for passkeys.
+// This is an experimental feature.
+// See: https://github.com/go-webauthn/webauthn
 package webauthn
 
 import (
@@ -85,7 +85,7 @@ func NewWebauthnService() *WebauthnService {
 	return &WebauthnService{wa: wa, timeout: timeout}
 }
 
-// Registration
+// BeginRegistration starts the WebAuthn registration process for a user.
 func (s *WebauthnService) BeginRegistration(user webauthn.User, opts ...webauthn.RegistrationOption) (*protocol.CredentialCreation, *webauthn.SessionData, error) {
 	existingCreds := webauthn.Credentials(user.WebAuthnCredentials())
 	defaultOpts := []webauthn.RegistrationOption{
@@ -107,7 +107,7 @@ func (s *WebauthnService) FinishRegistration(user webauthn.User, session *webaut
 	return credential, nil
 }
 
-// Login (MFA - user is known)
+// BeginLogin starts the WebAuthn login process for a known user (MFA).
 func (s *WebauthnService) BeginLogin(user webauthn.User, opts ...webauthn.LoginOption) (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
 	assertion, session, err := s.wa.BeginLogin(user, opts...)
 	if err != nil {
@@ -124,7 +124,7 @@ func (s *WebauthnService) FinishLogin(user webauthn.User, session *webauthn.Sess
 	return credential, nil
 }
 
-// Passkey Login (passwordless - user discovered from credential)
+// BeginPasskeyLogin starts the passwordless login process where the user is discovered from their credential.
 func (s *WebauthnService) BeginPasskeyLogin(opts ...webauthn.LoginOption) (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
 	assertion, session, err := s.wa.BeginDiscoverableLogin(opts...)
 	if err != nil {
@@ -141,7 +141,7 @@ func (s *WebauthnService) FinishPasskeyLogin(handler webauthn.DiscoverableUserHa
 	return user, credential, nil
 }
 
-// Helpers to parse responses
+// ParseRegistrationResponse parses a WebAuthn registration response from bytes.
 func ParseRegistrationResponse(body []byte) (*protocol.ParsedCredentialCreationData, error) {
 	return protocol.ParseCredentialCreationResponseBytes(body)
 }

@@ -1,3 +1,4 @@
+// Package minio provides S3-compatible object storage using MinIO.
 package minio
 
 import (

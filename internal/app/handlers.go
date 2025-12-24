@@ -1,3 +1,4 @@
+// Package app provides HTTP handlers for the IAM service.
 package app
 
 import (
@@ -441,7 +442,7 @@ func (a *App) HandleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Fetch user from database
-	user, err := a.db.GetUserById(ctx, claims.UserID)
+	user, err := a.db.GetUserByID(ctx, claims.UserID)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			respondErr(errs.NotFound, nil, "user not found")

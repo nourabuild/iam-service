@@ -1,3 +1,4 @@
+// Package mailtrap provides email sending functionality via Mailtrap API.
 package mailtrap
 
 import (

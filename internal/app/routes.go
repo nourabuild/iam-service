@@ -1,3 +1,4 @@
+// Package app provides HTTP handlers for the IAM service.
 package app
 
 import (

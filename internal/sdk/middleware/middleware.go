@@ -1,3 +1,4 @@
+// Package middleware provides HTTP middleware functions for the IAM service.
 package middleware
 
 import (
@@ -59,9 +60,9 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 		proto := r.Proto
 		method := r.Method
 		uri := r.URL.RequestURI()
-		user_agent := r.UserAgent()
+		userAgent := r.UserAgent()
 
-		log.Printf("IP: %s, Protocol: %s, Method: %s, URI: %s, User-Agent: %s", ip, proto, method, uri, user_agent)
+		log.Printf("IP: %s, Protocol: %s, Method: %s, URI: %s, User-Agent: %s", ip, proto, method, uri, userAgent)
 
 		next.ServeHTTP(w, r)
 	})

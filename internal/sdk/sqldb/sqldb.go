@@ -1,3 +1,4 @@
+// Package sqldb provides database operations for the IAM service.
 package sqldb
 
 import (
@@ -47,7 +48,7 @@ type Service interface {
 	Close() error
 
 	// User operations
-	GetUserById(ctx context.Context, userID string) (models.User, error)
+	GetUserByID(ctx context.Context, userID string) (models.User, error)
 	GetUserByEmail(ctx context.Context, email string) (models.User, error)
 	GetUserByAccount(ctx context.Context, account string) (models.User, error)
 	CreateUser(ctx context.Context, user models.NewUser) (models.User, error)
@@ -148,7 +149,7 @@ func (s *service) Close() error {
 // ---------------------------------------------
 
 // SelectMe retrieves a user by their ID
-func (s *service) GetUserById(ctx context.Context, userID string) (models.User, error) {
+func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, error) {
 	const query = `
 		SELECT 
 			id, 

@@ -1,3 +1,4 @@
+// Package sentry provides error tracking and monitoring via Sentry.
 package sentry
 
 import (
@@ -8,12 +9,12 @@ import (
 	"github.com/getsentry/sentry-go"
 )
 
-// Service provides Sentry error tracking functionality
+// SentryService provides Sentry error tracking functionality.
 type SentryService struct {
 	initialized bool
 }
 
-// New creates and initializes a new Sentry service
+// NewSentryService creates and initializes a new Sentry service.
 func NewSentryService() *SentryService {
 	dsn := os.Getenv("SENTRY_DSN")
 	if dsn == "" {
