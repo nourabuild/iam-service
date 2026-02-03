@@ -53,3 +53,6 @@ iam-service
 
 vendor
 
+
+
+internal/app/handlers_test.go

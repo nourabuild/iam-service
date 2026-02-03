@@ -80,3 +80,8 @@ migrate-version:
 
 migrate-drop:
 	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" drop -f
+
+
+# ==============================================================================
+
+# go version -m $(which staticcheck) | head -n 1 | awk '{print $NF}'

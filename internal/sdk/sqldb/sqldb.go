@@ -11,10 +11,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/nourabuild/iam-service/internal/sdk/models"
-
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/joho/godotenv/autoload"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
 // lib/pq errorCodeNames
@@ -151,17 +150,18 @@ func (s *service) Close() error {
 // SelectMe retrieves a user by their ID
 func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, error) {
 	const query = `
-		SELECT 
-			id, 
-			name, 
-			account, 
-			email, 
+		SELECT
+			id,
+			name,
+			account,
+			email,
 			password,
 			bio,
 			dob,
 			city,
 			phone,
-			created_at, 
+			is_admin,
+			created_at,
 			updated_at
 		FROM users
 		WHERE id = $1
@@ -178,6 +178,7 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, 
 		&user.DOB,
 		&user.City,
 		&user.Phone,
+		&user.IsAdmin,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -195,17 +196,18 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, 
 // GetUserByEmail retrieves a user by their email address
 func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User, error) {
 	const query = `
-		SELECT 
-			id, 
-			name, 
-			account, 
-			email, 
+		SELECT
+			id,
+			name,
+			account,
+			email,
 			password,
 			bio,
 			dob,
 			city,
 			phone,
-			created_at, 
+			is_admin,
+			created_at,
 			updated_at
 		FROM users
 		WHERE email = $1
@@ -222,6 +224,7 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User
 		&user.DOB,
 		&user.City,
 		&user.Phone,
+		&user.IsAdmin,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -239,17 +242,18 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User
 // GetUserByAccount retrieves a user by their account name
 func (s *service) GetUserByAccount(ctx context.Context, account string) (models.User, error) {
 	const query = `
-		SELECT 
-			id, 
-			name, 
-			account, 
-			email, 
+		SELECT
+			id,
+			name,
+			account,
+			email,
 			password,
 			bio,
 			dob,
 			city,
 			phone,
-			created_at, 
+			is_admin,
+			created_at,
 			updated_at
 		FROM users
 		WHERE account = $1
@@ -266,6 +270,7 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (models.
 		&user.DOB,
 		&user.City,
 		&user.Phone,
+		&user.IsAdmin,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
@@ -283,9 +288,9 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (models.
 // CreateUser inserts a new user into the database
 func (s *service) CreateUser(ctx context.Context, nu models.NewUser) (models.User, error) {
 	const query = `
-		INSERT INTO users (name, account, email, password)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, name, account, email, password, bio, dob, city, phone, created_at, updated_at
+		INSERT INTO users (name, account, email, password, is_admin)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, name, account, email, password, bio, dob, city, phone, is_admin, created_at, updated_at
 	`
 
 	var user models.User
@@ -295,6 +300,7 @@ func (s *service) CreateUser(ctx context.Context, nu models.NewUser) (models.Use
 		nu.Account,
 		nu.Email,
 		nu.Password,
+		false, // is_admin defaults to false
 	).Scan(
 		&user.ID,
 		&user.Name,
@@ -305,6 +311,7 @@ func (s *service) CreateUser(ctx context.Context, nu models.NewUser) (models.Use
 		&user.DOB,
 		&user.City,
 		&user.Phone,
+		&user.IsAdmin,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)

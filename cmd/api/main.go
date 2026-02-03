@@ -14,14 +14,9 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/nourabuild/iam-service/internal/app"
-	"github.com/nourabuild/iam-service/internal/sdk/otel"
+	"github.com/nourabuild/iam-service/internal/sdk/jwt"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
-	"github.com/nourabuild/iam-service/internal/services/hash"
-	"github.com/nourabuild/iam-service/internal/services/jwt"
-	"github.com/nourabuild/iam-service/internal/services/mailtrap"
-	"github.com/nourabuild/iam-service/internal/services/minio"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
-	"github.com/nourabuild/iam-service/internal/services/webauthn"
 )
 
 var build string
@@ -44,31 +39,21 @@ func run(logger *slog.Logger) error {
 	// 2. Resource Management with WaitGroups
 	var wg sync.WaitGroup
 
-	// 3. Tracing with Flight Recorder
-	traceConfig := otel.Config{
-		ServiceName: "iam-service",
-		Host:        os.Getenv("OTEL_EXPORTER_HOST"),
-		Probability: 1.0,
-	}
-	traceProvider, teardown, err := otel.InitTracing(traceConfig)
-	if err != nil {
-		return fmt.Errorf("otel: %w", err)
-	}
-	defer teardown(context.Background())
+	// 3. Initialize Sentry for error tracking
+	sentryService := sentry.NewSentryService()
+	defer sentryService.Close()
 
-	// 4. App Initialization
+	// 4. Initialize JWT service
+	jwtService := jwt.NewTokenService()
+
+	// 5. App Initialization
 	app := app.NewApp(
 		sqldb.New(),
-		traceProvider.Tracer("iam-service"),
-		hash.NewHashService(),
-		jwt.NewTokenService(),
-		mailtrap.NewMailtrapService(),
-		sentry.NewSentryService(),
-		webauthn.NewWebauthnService(),
-		minio.NewMinioService(),
+		sentryService,
+		jwtService,
 	)
 
-	// 5. Modern Server with CSRF Protection
+	// 6. Modern Server with CSRF Protection
 	srv := &http.Server{
 		Addr:         ":" + getEnv("PORT", "8080"),
 		Handler:      app.RegisterRoutes(),
@@ -78,6 +63,16 @@ func run(logger *slog.Logger) error {
 		ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
 
+	// 6a. Debug Server (separate port for security)
+	// debugSrv := &http.Server{
+	// 	Addr:         ":" + getEnv("DEBUG_PORT", "4000"),
+	// 	Handler:      debug.Mux(),
+	// 	IdleTimeout:  time.Minute,
+	// 	ReadTimeout:  5 * time.Second,
+	// 	WriteTimeout: 10 * time.Second,
+	// 	ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	// }
+
 	wg.Go(func() {
 		logger.Info("server starting", "addr", srv.Addr, "build", build)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -85,6 +80,13 @@ func run(logger *slog.Logger) error {
 			stop() // Cancel context if server crashes
 		}
 	})
+
+	// wg.Go(func() {
+	// 	logger.Info("debug server starting", "addr", debugSrv.Addr)
+	// 	if err := debugSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	// 		logger.Error("debug server", "error", err)
+	// 	}
+	// })
 
 	// 7. Graceful Shutdown Wait
 	<-ctx.Done()
@@ -96,6 +98,10 @@ func run(logger *slog.Logger) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
+
+	// if err := debugSrv.Shutdown(shutdownCtx); err != nil {
+	// 	logger.Error("debug server shutdown", "error", err)
+	// }
 
 	logger.Info("shutdown complete")
 	return nil
