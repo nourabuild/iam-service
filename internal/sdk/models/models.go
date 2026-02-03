@@ -3,6 +3,22 @@ package models
 
 import "time"
 
+// RefreshToken represents a refresh token for a user
+type RefreshToken struct {
+	ID        string     `json:"id"`
+	UserID    string     `json:"user_id"`
+	Token     []byte     `json:"-"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	CreatedAt time.Time  `json:"created_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+}
+
+type NewRefreshToken struct {
+	UserID    string
+	Token     string
+	ExpiresAt time.Time
+}
+
 // User represents a user in the system
 type User struct {
 	ID        string    `json:"id"`

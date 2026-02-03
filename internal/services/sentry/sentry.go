@@ -28,6 +28,21 @@ type SentryService struct {
 	initialized bool
 }
 
+// Scope is an alias for sentry.Scope to avoid importing sentry-go directly.
+type Scope = sentry.Scope
+
+// Level is an alias for sentry.Level to avoid importing sentry-go directly.
+type Level = sentry.Level
+
+// Level constants for convenience.
+const (
+	LevelDebug   Level = sentry.LevelDebug
+	LevelInfo    Level = sentry.LevelInfo
+	LevelWarning Level = sentry.LevelWarning
+	LevelError   Level = sentry.LevelError
+	LevelFatal   Level = sentry.LevelFatal
+)
+
 // NewSentryService creates and initializes a new SentryService.
 //
 // It reads configuration from environment variables:
@@ -161,6 +176,7 @@ func (s *SentryService) Recover() {
 //	    scope.SetUser(sentry.User{ID: userID})
 //	    scope.SetTag("endpoint", "/api/users")
 //	    scope.SetExtra("request_body", requestBody)
+//	    scope.SetLevel(sentry.LevelWarning)
 //
 //	    sentryService.CaptureException(err)
 //	})

@@ -31,6 +31,9 @@ func (a *App) registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/login", a.HandleLogin)
 	mux.HandleFunc("POST /api/v1/auth/refresh", a.HandleRefresh)
 
-	// Protected routes (will need middleware later)
-	mux.HandleFunc("GET /api/v1/auth/whoami", a.HandleWhoAmI)
+	// Protected routes
+	mux.HandleFunc("GET /api/v1/user/whoami", a.HandleWhoAmI)
+
+	// Admin-only routes
+	mux.HandleFunc("GET /api/v1/admin/users", a.RequireAdmin(a.HandleListUsers))
 }

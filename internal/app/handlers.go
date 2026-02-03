@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
-	sentrygo "github.com/getsentry/sentry-go"
 	"github.com/nourabuild/iam-service/internal/sdk/jwt"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
@@ -51,7 +51,118 @@ var (
 	ErrUnauthorized       = errors.New("unauthorized")
 	ErrMissingAuthHeader  = errors.New("missing authorization header")
 	ErrInvalidAuthHeader  = errors.New("invalid authorization header format")
+	ErrForbidden          = errors.New("forbidden: admin access required")
 )
+
+// =============================================================================
+// Middleware
+// =============================================================================
+
+// RequireAdmin is middleware that checks if the user is an admin
+func (a *App) RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Extract Authorization header
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			a.sentry.WithScope(func(scope *sentry.Scope) {
+				scope.SetTag("middleware", "admin")
+				scope.SetExtra("error_type", "missing_auth_header")
+				scope.SetLevel(sentry.LevelWarning)
+				a.sentry.CaptureMessage("Admin check failed: missing authorization header")
+			})
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrMissingAuthHeader.Error()})
+			return
+		}
+
+		// Extract token from "Bearer <token>" format
+		token, err := extractBearerToken(authHeader)
+		if err != nil {
+			a.sentry.WithScope(func(scope *sentry.Scope) {
+				scope.SetTag("middleware", "admin")
+				scope.SetExtra("error_type", "invalid_auth_header")
+				scope.SetLevel(sentry.LevelWarning)
+				a.sentry.CaptureMessage("Admin check failed: invalid authorization header")
+			})
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrInvalidAuthHeader.Error()})
+			return
+		}
+
+		// Parse and validate JWT token
+		claims, err := a.jwt.ParseAccessToken(r.Context(), token)
+		if err != nil {
+			a.sentry.WithScope(func(scope *sentry.Scope) {
+				scope.SetTag("middleware", "admin")
+				scope.SetExtra("error_type", "jwt_parse_error")
+				scope.SetLevel(sentry.LevelError)
+				a.sentry.CaptureException(err)
+			})
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrUnauthorized.Error()})
+			return
+		}
+
+		// Get user ID from token
+		userID := claims.Subject
+		if userID == "" {
+			a.sentry.WithScope(func(scope *sentry.Scope) {
+				scope.SetTag("middleware", "admin")
+				scope.SetExtra("error_type", "missing_subject")
+				scope.SetLevel(sentry.LevelWarning)
+				a.sentry.CaptureMessage("Admin check failed: token missing subject")
+			})
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrUnauthorized.Error()})
+			return
+		}
+
+		// Look up user to check admin status
+		user, err := a.db.GetUserByID(r.Context(), userID)
+		if err != nil {
+			a.sentry.WithScope(func(scope *sentry.Scope) {
+				scope.SetTag("middleware", "admin")
+				scope.SetExtra("error_type", "user_not_found")
+				scope.SetExtra("user_id", userID)
+				scope.SetLevel(sentry.LevelError)
+				a.sentry.CaptureException(err)
+			})
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrUnauthorized.Error()})
+			return
+		}
+
+		// Check if user is admin
+		if !user.IsAdmin {
+			a.sentry.WithScope(func(scope *sentry.Scope) {
+				scope.SetTag("middleware", "admin")
+				scope.SetExtra("error_type", "not_admin")
+				scope.SetExtra("user_id", userID)
+				scope.SetExtra("email", user.Email)
+				scope.SetLevel(sentry.LevelInfo)
+				a.sentry.CaptureMessage("Admin check failed: user is not an admin")
+			})
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrForbidden.Error()})
+			return
+		}
+
+		// User is admin, proceed to next handler
+		next(w, r)
+	}
+}
 
 // =============================================================================
 // Health Check Handlers
@@ -108,24 +219,12 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
-// LoginResponse represents the response for successful login
-type LoginResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	User         struct {
-		ID      string `json:"id"`
-		Name    string `json:"name"`
-		Account string `json:"account"`
-		Email   string `json:"email"`
-		IsAdmin bool   `json:"is_admin"`
-	} `json:"user"`
-}
-
 func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "register")
 			scope.SetExtra("error_type", "parse_multipart_form")
+			scope.SetLevel(sentry.LevelError)
 			a.sentry.CaptureException(err)
 		})
 
@@ -151,9 +250,10 @@ func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Parse JSON request body
 	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "register")
 			scope.SetExtra("error_type", "json_decode")
+			scope.SetLevel(sentry.LevelError)
 			a.sentry.CaptureException(err)
 		})
 
@@ -165,10 +265,11 @@ func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Validate required fields
 	if user.Name == "" || user.Account == "" || user.Email == "" || len(user.Password) == 0 {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "register")
 			scope.SetExtra("error_type", "validation")
 			scope.SetExtra("missing_field", getMissingField(user))
+			scope.SetLevel(sentry.LevelInfo)
 			a.sentry.CaptureMessage("Registration validation failed: missing fields")
 		})
 
@@ -180,10 +281,11 @@ func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Validate email format (basic check)
 	if !strings.Contains(user.Email, "@") || !strings.Contains(user.Email, ".") {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "register")
 			scope.SetExtra("error_type", "validation")
 			scope.SetExtra("email", user.Email)
+			scope.SetLevel(sentry.LevelInfo)
 			a.sentry.CaptureMessage("Registration validation failed: invalid email")
 		})
 
@@ -195,10 +297,11 @@ func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Validate password length
 	if len(user.Password) < 8 {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "register")
 			scope.SetExtra("error_type", "validation")
 			scope.SetExtra("password_length", len(user.Password))
+			scope.SetLevel(sentry.LevelInfo)
 			a.sentry.CaptureMessage("Registration validation failed: password too short")
 		})
 
@@ -211,9 +314,10 @@ func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// Hash password using bcrypt
 	hashedPassword, err := bcrypt.GenerateFromPassword(user.Password, bcrypt.DefaultCost)
 	if err != nil {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "register")
 			scope.SetExtra("error_type", "bcrypt_hash")
+			scope.SetLevel(sentry.LevelError)
 			a.sentry.CaptureException(err)
 		})
 
@@ -236,10 +340,11 @@ func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Check if user already exists
 		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
-			a.sentry.WithScope(func(scope *sentrygo.Scope) {
+			a.sentry.WithScope(func(scope *sentry.Scope) {
 				scope.SetTag("handler", "register")
 				scope.SetExtra("error_type", "user_exists")
 				scope.SetExtra("email", user.Email)
+				scope.SetLevel(sentry.LevelInfo)
 				a.sentry.CaptureMessage("Registration failed: user already exists")
 			})
 
@@ -250,10 +355,11 @@ func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Database error
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "register")
 			scope.SetExtra("error_type", "database")
 			scope.SetExtra("email", user.Email)
+			scope.SetLevel(sentry.LevelError)
 			a.sentry.CaptureException(err)
 		})
 
@@ -266,10 +372,11 @@ func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// Generate JWT tokens for automatic login
 	accessToken, refreshToken, err := a.jwt.GenerateTokens(r.Context(), createdUser.ID)
 	if err != nil {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "register")
 			scope.SetExtra("error_type", "jwt_generation")
 			scope.SetExtra("user_id", createdUser.ID)
+			scope.SetLevel(sentry.LevelError)
 			a.sentry.CaptureException(err)
 		})
 
@@ -279,20 +386,16 @@ func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Success! Return tokens and user info (same as login)
-	response := LoginResponse{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-	}
-	response.User.ID = createdUser.ID
-	response.User.Name = createdUser.Name
-	response.User.Account = createdUser.Account
-	response.User.Email = createdUser.Email
-	response.User.IsAdmin = createdUser.IsAdmin
-
+	// Success! Return tokens
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
+	if err := json.NewEncoder(w).Encode(struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+	}); err != nil {
 		log.Printf("Failed to write response: %v", err)
 	}
 }
@@ -325,9 +428,10 @@ func (a *App) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Parse JSON request body
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "login")
 			scope.SetExtra("error_type", "json_decode")
+			scope.SetLevel(sentry.LevelError)
 			a.sentry.CaptureException(err)
 		})
 
@@ -339,7 +443,7 @@ func (a *App) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Validate required fields
 	if input.Email == "" || input.Password == "" {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "login")
 			scope.SetExtra("error_type", "validation")
 			scope.SetExtra("missing_field", func() string {
@@ -348,6 +452,7 @@ func (a *App) HandleLogin(w http.ResponseWriter, r *http.Request) {
 				}
 				return "password"
 			}())
+			scope.SetLevel(sentry.LevelInfo)
 			a.sentry.CaptureMessage("Login validation failed: missing fields")
 		})
 
@@ -362,10 +467,11 @@ func (a *App) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Don't reveal whether user exists or not - use generic error
 		if errors.Is(err, sqldb.ErrDBNotFound) {
-			a.sentry.WithScope(func(scope *sentrygo.Scope) {
+			a.sentry.WithScope(func(scope *sentry.Scope) {
 				scope.SetTag("handler", "login")
 				scope.SetExtra("error_type", "user_not_found")
 				scope.SetExtra("email", input.Email)
+				scope.SetLevel(sentry.LevelInfo)
 				a.sentry.CaptureMessage("Login failed: user not found")
 			})
 
@@ -376,10 +482,11 @@ func (a *App) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Database error
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "login")
 			scope.SetExtra("error_type", "database")
 			scope.SetExtra("email", input.Email)
+			scope.SetLevel(sentry.LevelError)
 			a.sentry.CaptureException(err)
 		})
 
@@ -391,11 +498,12 @@ func (a *App) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Compare password with hashed password
 	if err := bcrypt.CompareHashAndPassword(user.Password, []byte(input.Password)); err != nil {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "login")
 			scope.SetExtra("error_type", "invalid_password")
 			scope.SetExtra("email", input.Email)
 			scope.SetExtra("user_id", user.ID)
+			scope.SetLevel(sentry.LevelInfo)
 			a.sentry.CaptureMessage("Login failed: invalid password")
 		})
 
@@ -408,10 +516,11 @@ func (a *App) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	// Generate JWT tokens
 	accessToken, refreshToken, err := a.jwt.GenerateTokens(r.Context(), user.ID)
 	if err != nil {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "login")
 			scope.SetExtra("error_type", "jwt_generation")
 			scope.SetExtra("user_id", user.ID)
+			scope.SetLevel(sentry.LevelError)
 			a.sentry.CaptureException(err)
 		})
 
@@ -421,35 +530,101 @@ func (a *App) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Success! Return tokens and user info
-	response := LoginResponse{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-	}
-	response.User.ID = user.ID
-	response.User.Name = user.Name
-	response.User.Account = user.Account
-	response.User.Email = user.Email
-	response.User.IsAdmin = user.IsAdmin
-
+	// Success! Return tokens
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
+	if err := json.NewEncoder(w).Encode(struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+	}); err != nil {
 		log.Printf("Failed to write response: %v", err)
 	}
 }
 
 func (a *App) HandleRefresh(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		RefreshToken string `json:"refresh_token"`
+	}
 
+	// Parse JSON request body
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
+			scope.SetTag("handler", "refresh")
+			scope.SetExtra("error_type", "json_decode")
+			scope.SetLevel(sentry.LevelError)
+			a.sentry.CaptureException(err)
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrInvalidJSON.Error()})
+		return
+	}
+
+	// Validate refresh token field
+	if input.RefreshToken == "" {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
+			scope.SetTag("handler", "refresh")
+			scope.SetExtra("error_type", "validation")
+			scope.SetLevel(sentry.LevelInfo)
+			a.sentry.CaptureMessage("Refresh failed: missing refresh token")
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrMissingFields.Error()})
+		return
+	}
+
+	// Generate new tokens using refresh token
+	accessToken, refreshToken, err := a.jwt.RefreshTokens(r.Context(), input.RefreshToken)
+	if err != nil {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
+			scope.SetTag("handler", "refresh")
+			scope.SetExtra("error_type", "jwt_refresh_error")
+			scope.SetLevel(sentry.LevelError)
+			a.sentry.CaptureException(err)
+		})
+
+		// Determine appropriate error message
+		errorMsg := ErrUnauthorized.Error()
+		if errors.Is(err, jwt.ErrExpiredToken) {
+			errorMsg = "refresh token has expired"
+		} else if errors.Is(err, jwt.ErrInvalidToken) {
+			errorMsg = "invalid refresh token"
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(ErrorResponse{Error: errorMsg})
+		return
+	}
+
+	// Success! Return new tokens
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+	}); err != nil {
+		log.Printf("Failed to write response: %v", err)
+	}
 }
 
 func (a *App) HandleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	// Extract Authorization header
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "whoami")
 			scope.SetExtra("error_type", "missing_auth_header")
+			scope.SetLevel(sentry.LevelWarning)
 			a.sentry.CaptureMessage("WhoAmI failed: missing authorization header")
 		})
 
@@ -462,10 +637,11 @@ func (a *App) HandleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	// Extract token from "Bearer <token>" format
 	token, err := extractBearerToken(authHeader)
 	if err != nil {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "whoami")
 			scope.SetExtra("error_type", "invalid_auth_header")
 			scope.SetExtra("auth_header", authHeader)
+			scope.SetLevel(sentry.LevelWarning)
 			a.sentry.CaptureMessage("WhoAmI failed: invalid authorization header format")
 		})
 
@@ -478,9 +654,10 @@ func (a *App) HandleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	// Parse and validate JWT token
 	claims, err := a.jwt.ParseAccessToken(r.Context(), token)
 	if err != nil {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "whoami")
 			scope.SetExtra("error_type", "jwt_parse_error")
+			scope.SetLevel(sentry.LevelError)
 			a.sentry.CaptureException(err)
 		})
 
@@ -501,9 +678,10 @@ func (a *App) HandleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	// Get user ID from token claims
 	userID := claims.Subject
 	if userID == "" {
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "whoami")
 			scope.SetExtra("error_type", "missing_subject")
+			scope.SetLevel(sentry.LevelWarning)
 			a.sentry.CaptureMessage("WhoAmI failed: token missing subject")
 		})
 
@@ -517,10 +695,11 @@ func (a *App) HandleWhoAmI(w http.ResponseWriter, r *http.Request) {
 	user, err := a.db.GetUserByID(r.Context(), userID)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
-			a.sentry.WithScope(func(scope *sentrygo.Scope) {
+			a.sentry.WithScope(func(scope *sentry.Scope) {
 				scope.SetTag("handler", "whoami")
 				scope.SetExtra("error_type", "user_not_found")
 				scope.SetExtra("user_id", userID)
+				scope.SetLevel(sentry.LevelWarning)
 				a.sentry.CaptureMessage("WhoAmI failed: user not found")
 			})
 
@@ -531,10 +710,11 @@ func (a *App) HandleWhoAmI(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Database error
-		a.sentry.WithScope(func(scope *sentrygo.Scope) {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
 			scope.SetTag("handler", "whoami")
 			scope.SetExtra("error_type", "database")
 			scope.SetExtra("user_id", userID)
+			scope.SetLevel(sentry.LevelError)
 			a.sentry.CaptureException(err)
 		})
 
@@ -565,6 +745,66 @@ func (a *App) HandleWhoAmI(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Failed to write response: %v", err)
 	}
 }
+
+func (a *App) HandleListUsers(w http.ResponseWriter, r *http.Request) {
+	// Get all users from database
+	users, err := a.db.ListUsers(r.Context())
+	if err != nil {
+		a.sentry.WithScope(func(scope *sentry.Scope) {
+			scope.SetTag("handler", "list_users")
+			scope.SetExtra("error_type", "database")
+			scope.SetLevel(sentry.LevelError)
+			a.sentry.CaptureException(err)
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ErrorResponse{Error: "failed to retrieve users"})
+		return
+	}
+
+	// Transform users to exclude sensitive data (passwords)
+	type UserResponse struct {
+		ID        string    `json:"id"`
+		Name      string    `json:"name"`
+		Account   string    `json:"account"`
+		Email     string    `json:"email"`
+		Bio       *string   `json:"bio"`
+		DOB       *string   `json:"dob"`
+		City      *string   `json:"city"`
+		Phone     *string   `json:"phone"`
+		IsAdmin   bool      `json:"is_admin"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+
+	response := make([]UserResponse, len(users))
+	for i, user := range users {
+		response[i] = UserResponse{
+			ID:        user.ID,
+			Name:      user.Name,
+			Account:   user.Account,
+			Email:     user.Email,
+			Bio:       user.Bio,
+			DOB:       user.DOB,
+			City:      user.City,
+			Phone:     user.Phone,
+			IsAdmin:   user.IsAdmin,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Failed to write response: %v", err)
+	}
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
 
 // extractBearerToken extracts the token from "Bearer <token>" format
 func extractBearerToken(authHeader string) (string, error) {

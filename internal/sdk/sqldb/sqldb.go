@@ -51,6 +51,7 @@ type Service interface {
 	GetUserByEmail(ctx context.Context, email string) (models.User, error)
 	GetUserByAccount(ctx context.Context, account string) (models.User, error)
 	CreateUser(ctx context.Context, user models.NewUser) (models.User, error)
+	ListUsers(ctx context.Context) ([]models.User, error)
 }
 
 type service struct {
@@ -324,6 +325,62 @@ func (s *service) CreateUser(ctx context.Context, nu models.NewUser) (models.Use
 	}
 
 	return user, nil
+}
+
+// ListUsers retrieves all users from the database
+func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
+	const query = `
+		SELECT
+			id,
+			name,
+			account,
+			email,
+			password,
+			bio,
+			dob,
+			city,
+			phone,
+			is_admin,
+			created_at,
+			updated_at
+		FROM users
+		ORDER BY created_at DESC
+	`
+
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("listing users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []models.User
+	for rows.Next() {
+		var user models.User
+		err := rows.Scan(
+			&user.ID,
+			&user.Name,
+			&user.Account,
+			&user.Email,
+			&user.Password,
+			&user.Bio,
+			&user.DOB,
+			&user.City,
+			&user.Phone,
+			&user.IsAdmin,
+			&user.CreatedAt,
+			&user.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scanning user: %w", err)
+		}
+		users = append(users, user)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating users: %w", err)
+	}
+
+	return users, nil
 }
 
 // ---------------------------------------------
