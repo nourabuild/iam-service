@@ -9,8 +9,9 @@ type RefreshToken struct {
 	UserID    string     `json:"user_id"`
 	Token     []byte     `json:"-"`
 	ExpiresAt time.Time  `json:"expires_at"`
-	CreatedAt time.Time  `json:"created_at"`
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 type NewRefreshToken struct {

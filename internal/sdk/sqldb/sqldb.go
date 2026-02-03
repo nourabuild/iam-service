@@ -52,6 +52,13 @@ type Service interface {
 	GetUserByAccount(ctx context.Context, account string) (models.User, error)
 	CreateUser(ctx context.Context, user models.NewUser) (models.User, error)
 	ListUsers(ctx context.Context) ([]models.User, error)
+
+	// Refresh token operations
+	CreateRefreshToken(ctx context.Context, token models.NewRefreshToken) (models.RefreshToken, error)
+	GetRefreshTokenByToken(ctx context.Context, token []byte) (models.RefreshToken, error)
+	RevokeRefreshToken(ctx context.Context, tokenID string) error
+	DeleteExpiredRefreshTokens(ctx context.Context) error
+	DeleteRefreshTokensByUserID(ctx context.Context, userID string) error
 }
 
 type service struct {
@@ -381,6 +388,135 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 	}
 
 	return users, nil
+}
+
+// ---------------------------------------------
+// Refresh Token Operations
+// ---------------------------------------------
+
+// CreateRefreshToken inserts a new refresh token into the database
+func (s *service) CreateRefreshToken(ctx context.Context, nrt models.NewRefreshToken) (models.RefreshToken, error) {
+	const query = `
+		INSERT INTO refresh_tokens (user_id, token, expires_at)
+		VALUES ($1, $2, $3)
+		RETURNING id, user_id, token, expires_at, revoked_at, created_at, updated_at
+	`
+
+	var rt models.RefreshToken
+	err := s.db.QueryRowContext(ctx, query,
+		nrt.UserID,
+		nrt.Token,
+		nrt.ExpiresAt,
+	).Scan(
+		&rt.ID,
+		&rt.UserID,
+		&rt.Token,
+		&rt.ExpiresAt,
+		&rt.RevokedAt,
+		&rt.CreatedAt,
+		&rt.UpdatedAt,
+	)
+
+	if err != nil {
+		if isPgError(err, foreignKeyViolation) {
+			return models.RefreshToken{}, ErrForeignKeyViolation
+		}
+		return models.RefreshToken{}, fmt.Errorf("creating refresh token: %w", err)
+	}
+
+	return rt, nil
+}
+
+// GetRefreshTokenByToken retrieves a refresh token by its token value
+func (s *service) GetRefreshTokenByToken(ctx context.Context, token []byte) (models.RefreshToken, error) {
+	const query = `
+		SELECT
+			id,
+			user_id,
+			token,
+			expires_at,
+			revoked_at,
+			created_at,
+			updated_at
+		FROM refresh_tokens
+		WHERE token = $1
+	`
+
+	var rt models.RefreshToken
+	err := s.db.QueryRowContext(ctx, query, token).Scan(
+		&rt.ID,
+		&rt.UserID,
+		&rt.Token,
+		&rt.ExpiresAt,
+		&rt.RevokedAt,
+		&rt.CreatedAt,
+		&rt.UpdatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.RefreshToken{}, ErrDBNotFound
+		}
+		return models.RefreshToken{}, fmt.Errorf("getting refresh token: %w", err)
+	}
+
+	return rt, nil
+}
+
+// RevokeRefreshToken marks a refresh token as revoked
+func (s *service) RevokeRefreshToken(ctx context.Context, tokenID string) error {
+	const query = `
+		UPDATE refresh_tokens
+		SET revoked_at = CURRENT_TIMESTAMP,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`
+
+	result, err := s.db.ExecContext(ctx, query, tokenID)
+	if err != nil {
+		return fmt.Errorf("revoking refresh token: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return ErrDBNotFound
+	}
+
+	return nil
+}
+
+// DeleteExpiredRefreshTokens removes all expired refresh tokens from the database
+func (s *service) DeleteExpiredRefreshTokens(ctx context.Context) error {
+	const query = `
+		DELETE FROM refresh_tokens
+		WHERE expires_at < CURRENT_TIMESTAMP
+	`
+
+	_, err := s.db.ExecContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("deleting expired refresh tokens: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteRefreshTokensByUserID removes all refresh tokens for a specific user
+func (s *service) DeleteRefreshTokensByUserID(ctx context.Context, userID string) error {
+	const query = `
+		DELETE FROM refresh_tokens
+		WHERE user_id = $1
+	`
+
+	_, err := s.db.ExecContext(ctx, query, userID)
+	if err != nil {
+		return fmt.Errorf("deleting refresh tokens for user: %w", err)
+	}
+
+	return nil
 }
 
 // ---------------------------------------------

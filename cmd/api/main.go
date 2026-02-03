@@ -53,7 +53,9 @@ func run(logger *slog.Logger) error {
 		jwtService,
 	)
 
-	// 6. Modern Server with CSRF Protection
+	// 6. Setup Gin router
+
+	// 7. Modern Server with configured timeouts
 	srv := &http.Server{
 		Addr:         ":" + getEnv("PORT", "8080"),
 		Handler:      app.RegisterRoutes(),
@@ -63,7 +65,6 @@ func run(logger *slog.Logger) error {
 		ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
 
-	// 6a. Debug Server (separate port for security)
 	// debugSrv := &http.Server{
 	// 	Addr:         ":" + getEnv("DEBUG_PORT", "4000"),
 	// 	Handler:      debug.Mux(),

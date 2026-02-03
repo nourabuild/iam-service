@@ -1,24 +1,110 @@
-// Package app provides HTTP handlers for the IAM service.
 package app
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
-	"fmt"
-	"log"
 	"net/http"
+	"net/mail"
 	"os"
 	"runtime"
-	"strconv"
-	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/nourabuild/iam-service/internal/sdk/jwt"
+	"github.com/nourabuild/iam-service/internal/sdk/middleware"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 	"golang.org/x/crypto/bcrypt"
 )
+
+const (
+	minPasswordLength = 8
+	bcryptCost        = bcrypt.DefaultCost
+)
+
+const (
+	ErrUnmarshal          = "invalid_request_body"
+	ErrMissingFields      = "missing_required_fields"
+	ErrInvalidEmail       = "invalid_email"
+	ErrPasswordTooShort   = "password_too_short"
+	ErrUserExists         = "user_already_exists"
+	ErrInvalidCredentials = "invalid_credentials"
+	ErrUnauthorized       = "unauthorized"
+	ErrForbidden          = "forbidden"
+	ErrHashPassword       = "internal_hash_error"
+	ErrCreateUser         = "internal_create_user_error"
+	ErrProcessLogin       = "internal_login_error"
+	ErrRetrieveUsers      = "internal_retrieve_users_error"
+	ErrGenerateTokens     = "internal_generate_tokens_error"
+	ErrExpiredToken       = "expired_token"
+	ErrInvalidToken       = "invalid_token"
+	ErrMissingAuthHeader  = "missing_authorization_header"
+	ErrInvalidAuthHeader  = "invalid_authorization_header"
+	ErrUserNotFound       = "user_not_found"
+	ErrVerifyUser         = "internal_verify_user_error"
+)
+
+var errorStatusMap = map[string]int{
+	ErrUnmarshal:          http.StatusBadRequest,
+	ErrMissingFields:      http.StatusBadRequest,
+	ErrInvalidEmail:       http.StatusBadRequest,
+	ErrPasswordTooShort:   http.StatusBadRequest,
+	ErrUserExists:         http.StatusConflict,
+	ErrInvalidCredentials: http.StatusUnauthorized,
+	ErrUnauthorized:       http.StatusUnauthorized,
+	ErrForbidden:          http.StatusForbidden,
+	ErrHashPassword:       http.StatusInternalServerError,
+	ErrCreateUser:         http.StatusInternalServerError,
+	ErrProcessLogin:       http.StatusInternalServerError,
+	ErrRetrieveUsers:      http.StatusInternalServerError,
+	ErrGenerateTokens:     http.StatusInternalServerError,
+	ErrExpiredToken:       http.StatusUnauthorized,
+	ErrInvalidToken:       http.StatusUnauthorized,
+	ErrMissingAuthHeader:  http.StatusUnauthorized,
+	ErrInvalidAuthHeader:  http.StatusUnauthorized,
+	ErrUserNotFound:       http.StatusUnauthorized,
+	ErrVerifyUser:         http.StatusInternalServerError,
+}
+
+type LoginRequest struct {
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required"`
+}
+
+type RefreshRequest struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
+}
+
+type TokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+type UserResponse struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Account   string    `json:"account"`
+	Email     string    `json:"email"`
+	Bio       *string   `json:"bio,omitempty"`
+	DOB       *string   `json:"dob,omitempty"`
+	City      *string   `json:"city,omitempty"`
+	Phone     *string   `json:"phone,omitempty"`
+	IsAdmin   bool      `json:"is_admin"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type ErrorResponse struct {
+	Error   string            `json:"error"`
+	Details map[string]string `json:"details,omitempty"`
+}
+
+type LivenessResponse struct {
+	Status     string `json:"status"`
+	Host       string `json:"host"`
+	GOMAXPROCS int    `json:"gomaxprocs"`
+}
 
 type App struct {
 	db     sqldb.Service
@@ -26,706 +112,369 @@ type App struct {
 	jwt    *jwt.TokenService
 }
 
-func NewApp(
-	db sqldb.Service,
-	sentry *sentry.SentryService,
-	jwt *jwt.TokenService,
-) *App {
-	return &App{
-		db:     db,
-		sentry: sentry,
-		jwt:    jwt,
-	}
+func NewApp(db sqldb.Service, sentry *sentry.SentryService, jwt *jwt.TokenService) *App {
+	return &App{db: db, sentry: sentry, jwt: jwt}
 }
 
-var (
-	ErrLivenessFailed     = errors.New("liveness check failed")
-	ErrReadinessFailed    = errors.New("readiness check failed")
-	ErrInvalidJSON        = errors.New("invalid JSON request body")
-	ErrMissingFields      = errors.New("missing required fields")
-	ErrInvalidEmail       = errors.New("invalid email address")
-	ErrPasswordTooShort   = errors.New("password must be at least 8 characters")
-	ErrUserExists         = errors.New("user already exists")
-	ErrInvalidCredentials = errors.New("invalid email or password")
-	ErrUserNotFound       = errors.New("user not found")
-	ErrUnauthorized       = errors.New("unauthorized")
-	ErrMissingAuthHeader  = errors.New("missing authorization header")
-	ErrInvalidAuthHeader  = errors.New("invalid authorization header format")
-	ErrForbidden          = errors.New("forbidden: admin access required")
-)
+func (a *App) HandleReadiness(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	c.Request = c.Request.WithContext(ctx)
 
-// =============================================================================
-// Middleware
-// =============================================================================
-
-// RequireAdmin is middleware that checks if the user is an admin
-func (a *App) RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Extract Authorization header
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			a.sentry.WithScope(func(scope *sentry.Scope) {
-				scope.SetTag("middleware", "admin")
-				scope.SetExtra("error_type", "missing_auth_header")
-				scope.SetLevel(sentry.LevelWarning)
-				a.sentry.CaptureMessage("Admin check failed: missing authorization header")
-			})
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrMissingAuthHeader.Error()})
-			return
-		}
-
-		// Extract token from "Bearer <token>" format
-		token, err := extractBearerToken(authHeader)
-		if err != nil {
-			a.sentry.WithScope(func(scope *sentry.Scope) {
-				scope.SetTag("middleware", "admin")
-				scope.SetExtra("error_type", "invalid_auth_header")
-				scope.SetLevel(sentry.LevelWarning)
-				a.sentry.CaptureMessage("Admin check failed: invalid authorization header")
-			})
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrInvalidAuthHeader.Error()})
-			return
-		}
-
-		// Parse and validate JWT token
-		claims, err := a.jwt.ParseAccessToken(r.Context(), token)
-		if err != nil {
-			a.sentry.WithScope(func(scope *sentry.Scope) {
-				scope.SetTag("middleware", "admin")
-				scope.SetExtra("error_type", "jwt_parse_error")
-				scope.SetLevel(sentry.LevelError)
-				a.sentry.CaptureException(err)
-			})
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrUnauthorized.Error()})
-			return
-		}
-
-		// Get user ID from token
-		userID := claims.Subject
-		if userID == "" {
-			a.sentry.WithScope(func(scope *sentry.Scope) {
-				scope.SetTag("middleware", "admin")
-				scope.SetExtra("error_type", "missing_subject")
-				scope.SetLevel(sentry.LevelWarning)
-				a.sentry.CaptureMessage("Admin check failed: token missing subject")
-			})
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrUnauthorized.Error()})
-			return
-		}
-
-		// Look up user to check admin status
-		user, err := a.db.GetUserByID(r.Context(), userID)
-		if err != nil {
-			a.sentry.WithScope(func(scope *sentry.Scope) {
-				scope.SetTag("middleware", "admin")
-				scope.SetExtra("error_type", "user_not_found")
-				scope.SetExtra("user_id", userID)
-				scope.SetLevel(sentry.LevelError)
-				a.sentry.CaptureException(err)
-			})
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrUnauthorized.Error()})
-			return
-		}
-
-		// Check if user is admin
-		if !user.IsAdmin {
-			a.sentry.WithScope(func(scope *sentry.Scope) {
-				scope.SetTag("middleware", "admin")
-				scope.SetExtra("error_type", "not_admin")
-				scope.SetExtra("user_id", userID)
-				scope.SetExtra("email", user.Email)
-				scope.SetLevel(sentry.LevelInfo)
-				a.sentry.CaptureMessage("Admin check failed: user is not an admin")
-			})
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrForbidden.Error()})
-			return
-		}
-
-		// User is admin, proceed to next handler
-		next(w, r)
-	}
+	c.JSON(http.StatusOK, a.db.Health())
 }
 
-// =============================================================================
-// Health Check Handlers
-// =============================================================================
-
-func (a *App) HandleReadiness(w http.ResponseWriter, r *http.Request) {
-	// Database check
-	resp, err := json.Marshal(a.db.Health())
-
-	if err != nil {
-		http.Error(w, ErrReadinessFailed.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.Write(resp); err != nil {
-		log.Printf("Failed to write response: %v", err)
-	}
-}
-
-func (a *App) HandleLiveness(w http.ResponseWriter, r *http.Request) {
-	// API check
-	host, err := os.Hostname()
-	if err != nil {
+func (a *App) HandleLiveness(c *gin.Context) {
+	host, _ := os.Hostname()
+	if host == "" {
 		host = "unavailable"
 	}
 
-	info := map[string]string{
-		"status":     "up",
-		"host":       host,
-		"GOMAXPROCS": strconv.Itoa(runtime.GOMAXPROCS(0)),
-	}
-
-	jsonResp, err := json.Marshal(info)
-	if err != nil {
-		http.Error(w, ErrLivenessFailed.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.Write(jsonResp); err != nil {
-		log.Printf("Failed to write response: %v", err)
-	}
+	c.JSON(http.StatusOK, LivenessResponse{
+		Status:     "up",
+		Host:       host,
+		GOMAXPROCS: runtime.GOMAXPROCS(0),
+	})
 }
 
-// =============================================================================
-// Auth Handlers
-// =============================================================================
-
-// RegisterRequest represents the request body for user registration
-
-// ErrorResponse represents an error response
-type ErrorResponse struct {
-	Error string `json:"error"`
-}
-
-func (a *App) HandleRegister(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "register")
-			scope.SetExtra("error_type", "parse_multipart_form")
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrInvalidJSON.Error()})
-		return
-	}
-
-	// Debug: Print form values
-	fmt.Println("Received Form Data:")
-	for key, values := range r.PostForm {
-		fmt.Printf("%s: %v\n", key, values)
-	}
-
-	user := models.NewUser{
-		Name:            r.FormValue("name"),
-		Account:         r.FormValue("account"),
-		Email:           r.FormValue("email"),
-		Password:        []byte(r.FormValue("password")),
-		PasswordConfirm: []byte(r.FormValue("password_confirm")),
-	}
-
-	// Parse JSON request body
-	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "register")
-			scope.SetExtra("error_type", "json_decode")
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrInvalidJSON.Error()})
-		return
-	}
-
-	// Validate required fields
-	if user.Name == "" || user.Account == "" || user.Email == "" || len(user.Password) == 0 {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "register")
-			scope.SetExtra("error_type", "validation")
-			scope.SetExtra("missing_field", getMissingField(user))
-			scope.SetLevel(sentry.LevelInfo)
-			a.sentry.CaptureMessage("Registration validation failed: missing fields")
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrMissingFields.Error()})
-		return
-	}
-
-	// Validate email format (basic check)
-	if !strings.Contains(user.Email, "@") || !strings.Contains(user.Email, ".") {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "register")
-			scope.SetExtra("error_type", "validation")
-			scope.SetExtra("email", user.Email)
-			scope.SetLevel(sentry.LevelInfo)
-			a.sentry.CaptureMessage("Registration validation failed: invalid email")
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrInvalidEmail.Error()})
-		return
-	}
-
-	// Validate password length
-	if len(user.Password) < 8 {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "register")
-			scope.SetExtra("error_type", "validation")
-			scope.SetExtra("password_length", len(user.Password))
-			scope.SetLevel(sentry.LevelInfo)
-			a.sentry.CaptureMessage("Registration validation failed: password too short")
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrPasswordTooShort.Error()})
-		return
-	}
-
-	// Hash password using bcrypt
-	hashedPassword, err := bcrypt.GenerateFromPassword(user.Password, bcrypt.DefaultCost)
-	if err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "register")
-			scope.SetExtra("error_type", "bcrypt_hash")
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "failed to process password"})
-		return
-	}
-
-	// Create new user
-	newUser := models.NewUser{
-		Name:            user.Name,
-		Account:         user.Account,
-		Email:           user.Email,
-		Password:        hashedPassword,
-		PasswordConfirm: user.PasswordConfirm,
-	}
-
-	createdUser, err := a.db.CreateUser(r.Context(), newUser)
-	if err != nil {
-		// Check if user already exists
-		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
-			a.sentry.WithScope(func(scope *sentry.Scope) {
-				scope.SetTag("handler", "register")
-				scope.SetExtra("error_type", "user_exists")
-				scope.SetExtra("email", user.Email)
-				scope.SetLevel(sentry.LevelInfo)
-				a.sentry.CaptureMessage("Registration failed: user already exists")
-			})
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrUserExists.Error()})
-			return
+func (a *App) HandleRegister(c *gin.Context) {
+	var req models.NewUser
+	if err := c.ShouldBindJSON(&req); err != nil {
+		a.toSentry(c, "register", "unmarshal", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrUnmarshal]
+		if !ok {
+			status = http.StatusInternalServerError
 		}
-
-		// Database error
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "register")
-			scope.SetExtra("error_type", "database")
-			scope.SetExtra("email", user.Email)
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "failed to create user"})
+		c.JSON(status, ErrorResponse{Error: ErrUnmarshal})
 		return
 	}
 
-	// Generate JWT tokens for automatic login
-	accessToken, refreshToken, err := a.jwt.GenerateTokens(r.Context(), createdUser.ID)
-	if err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "register")
-			scope.SetExtra("error_type", "jwt_generation")
-			scope.SetExtra("user_id", createdUser.ID)
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "failed to generate tokens"})
-		return
-	}
-
-	// Success! Return tokens
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-	}{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-	}); err != nil {
-		log.Printf("Failed to write response: %v", err)
-	}
-}
-
-// getMissingField returns which field is missing from the request
-func getMissingField(req models.NewUser) string {
+	// Validate new user
+	var missing []string
 	if req.Name == "" {
-		return "name"
+		missing = append(missing, "name")
 	}
 	if req.Account == "" {
-		return "account"
+		missing = append(missing, "account")
 	}
 	if req.Email == "" {
-		return "email"
+		missing = append(missing, "email")
 	}
 	if len(req.Password) == 0 {
-		return "password"
-	}
-	if len(req.PasswordConfirm) == 0 {
-		return "password_confirm"
-	}
-	return "unknown"
-}
-
-func (a *App) HandleLogin(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		missing = append(missing, "password")
 	}
 
-	// Parse JSON request body
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "login")
-			scope.SetExtra("error_type", "json_decode")
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrInvalidJSON.Error()})
+	if len(missing) > 0 {
+		status, ok := errorStatusMap[ErrMissingFields]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrMissingFields})
 		return
 	}
 
-	// Validate required fields
-	if input.Email == "" || input.Password == "" {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "login")
-			scope.SetExtra("error_type", "validation")
-			scope.SetExtra("missing_field", func() string {
-				if input.Email == "" {
-					return "email"
-				}
-				return "password"
-			}())
-			scope.SetLevel(sentry.LevelInfo)
-			a.sentry.CaptureMessage("Login validation failed: missing fields")
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrMissingFields.Error()})
+	if _, err := mail.ParseAddress(req.Email); err != nil {
+		status, ok := errorStatusMap[ErrInvalidEmail]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrInvalidEmail})
 		return
 	}
 
-	// Look up user by email
-	user, err := a.db.GetUserByEmail(r.Context(), input.Email)
+	if len(req.Password) < minPasswordLength {
+		status, ok := errorStatusMap[ErrPasswordTooShort]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrPasswordTooShort})
+		return
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword(req.Password, bcryptCost)
 	if err != nil {
-		// Don't reveal whether user exists or not - use generic error
-		if errors.Is(err, sqldb.ErrDBNotFound) {
-			a.sentry.WithScope(func(scope *sentry.Scope) {
-				scope.SetTag("handler", "login")
-				scope.SetExtra("error_type", "user_not_found")
-				scope.SetExtra("email", input.Email)
-				scope.SetLevel(sentry.LevelInfo)
-				a.sentry.CaptureMessage("Login failed: user not found")
-			})
+		a.toSentry(c, "register", "bcrypt", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrHashPassword]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrHashPassword})
+		return
+	}
 
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrInvalidCredentials.Error()})
+	newUser := models.NewUser{
+		Name:            req.Name,
+		Account:         req.Account,
+		Email:           req.Email,
+		Password:        hashedPassword,
+		PasswordConfirm: req.PasswordConfirm,
+	}
+
+	createdUser, err := a.db.CreateUser(c.Request.Context(), newUser)
+	if err != nil {
+		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
+			status, ok := errorStatusMap[ErrUserExists]
+			if !ok {
+				status = http.StatusInternalServerError
+			}
+			c.JSON(status, ErrorResponse{Error: ErrUserExists})
 			return
 		}
-
-		// Database error
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "login")
-			scope.SetExtra("error_type", "database")
-			scope.SetExtra("email", input.Email)
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "failed to process login"})
+		a.toSentry(c, "register", "db", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrCreateUser]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrCreateUser})
 		return
 	}
 
-	// Compare password with hashed password
-	if err := bcrypt.CompareHashAndPassword(user.Password, []byte(input.Password)); err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "login")
-			scope.SetExtra("error_type", "invalid_password")
-			scope.SetExtra("email", input.Email)
-			scope.SetExtra("user_id", user.ID)
-			scope.SetLevel(sentry.LevelInfo)
-			a.sentry.CaptureMessage("Login failed: invalid password")
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrInvalidCredentials.Error()})
-		return
-	}
-
-	// Generate JWT tokens
-	accessToken, refreshToken, err := a.jwt.GenerateTokens(r.Context(), user.ID)
+	// Generate tokens
+	accessToken, refreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), createdUser.ID)
 	if err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "login")
-			scope.SetExtra("error_type", "jwt_generation")
-			scope.SetExtra("user_id", user.ID)
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "failed to generate tokens"})
+		a.toSentry(c, "register", "jwt", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrGenerateTokens]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrGenerateTokens})
 		return
 	}
 
-	// Success! Return tokens
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-	}{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-	}); err != nil {
-		log.Printf("Failed to write response: %v", err)
+	// Store refresh token in database
+	refreshTokenExpiry := time.Now().Add(7 * 24 * time.Hour) // 7 days
+	_, err = a.db.CreateRefreshToken(c.Request.Context(), models.NewRefreshToken{
+		UserID:    createdUser.ID,
+		Token:     refreshToken,
+		ExpiresAt: refreshTokenExpiry,
+	})
+	if err != nil {
+		a.toSentry(c, "register", "db_token", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrGenerateTokens]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrGenerateTokens})
+		return
 	}
+
+	c.JSON(http.StatusCreated, TokenResponse{AccessToken: accessToken, RefreshToken: refreshToken})
 }
 
-func (a *App) HandleRefresh(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-
-	// Parse JSON request body
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "refresh")
-			scope.SetExtra("error_type", "json_decode")
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrInvalidJSON.Error()})
-		return
-	}
-
-	// Validate refresh token field
-	if input.RefreshToken == "" {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "refresh")
-			scope.SetExtra("error_type", "validation")
-			scope.SetLevel(sentry.LevelInfo)
-			a.sentry.CaptureMessage("Refresh failed: missing refresh token")
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrMissingFields.Error()})
-		return
-	}
-
-	// Generate new tokens using refresh token
-	accessToken, refreshToken, err := a.jwt.RefreshTokens(r.Context(), input.RefreshToken)
-	if err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "refresh")
-			scope.SetExtra("error_type", "jwt_refresh_error")
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		// Determine appropriate error message
-		errorMsg := ErrUnauthorized.Error()
-		if errors.Is(err, jwt.ErrExpiredToken) {
-			errorMsg = "refresh token has expired"
-		} else if errors.Is(err, jwt.ErrInvalidToken) {
-			errorMsg = "invalid refresh token"
+func (a *App) HandleLogin(c *gin.Context) {
+	var req LoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		a.toSentry(c, "login", "unmarshal", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrUnmarshal]
+		if !ok {
+			status = http.StatusInternalServerError
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: errorMsg})
+		c.JSON(status, ErrorResponse{Error: ErrUnmarshal})
 		return
 	}
 
-	// Success! Return new tokens
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-	}{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-	}); err != nil {
-		log.Printf("Failed to write response: %v", err)
-	}
-}
-
-func (a *App) HandleWhoAmI(w http.ResponseWriter, r *http.Request) {
-	// Extract Authorization header
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "whoami")
-			scope.SetExtra("error_type", "missing_auth_header")
-			scope.SetLevel(sentry.LevelWarning)
-			a.sentry.CaptureMessage("WhoAmI failed: missing authorization header")
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrMissingAuthHeader.Error()})
-		return
-	}
-
-	// Extract token from "Bearer <token>" format
-	token, err := extractBearerToken(authHeader)
-	if err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "whoami")
-			scope.SetExtra("error_type", "invalid_auth_header")
-			scope.SetExtra("auth_header", authHeader)
-			scope.SetLevel(sentry.LevelWarning)
-			a.sentry.CaptureMessage("WhoAmI failed: invalid authorization header format")
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrInvalidAuthHeader.Error()})
-		return
-	}
-
-	// Parse and validate JWT token
-	claims, err := a.jwt.ParseAccessToken(r.Context(), token)
-	if err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "whoami")
-			scope.SetExtra("error_type", "jwt_parse_error")
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		// Determine appropriate error message
-		errorMsg := ErrUnauthorized.Error()
-		if errors.Is(err, jwt.ErrExpiredToken) {
-			errorMsg = "token has expired"
-		} else if errors.Is(err, jwt.ErrInvalidToken) {
-			errorMsg = "invalid token"
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: errorMsg})
-		return
-	}
-
-	// Get user ID from token claims
-	userID := claims.Subject
-	if userID == "" {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "whoami")
-			scope.SetExtra("error_type", "missing_subject")
-			scope.SetLevel(sentry.LevelWarning)
-			a.sentry.CaptureMessage("WhoAmI failed: token missing subject")
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: ErrUnauthorized.Error()})
-		return
-	}
-
-	// Look up user by ID
-	user, err := a.db.GetUserByID(r.Context(), userID)
+	user, err := a.db.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
-			a.sentry.WithScope(func(scope *sentry.Scope) {
-				scope.SetTag("handler", "whoami")
-				scope.SetExtra("error_type", "user_not_found")
-				scope.SetExtra("user_id", userID)
-				scope.SetLevel(sentry.LevelWarning)
-				a.sentry.CaptureMessage("WhoAmI failed: user not found")
-			})
-
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: ErrUserNotFound.Error()})
+			status, ok := errorStatusMap[ErrInvalidCredentials]
+			if !ok {
+				status = http.StatusInternalServerError
+			}
+			c.JSON(status, ErrorResponse{Error: ErrInvalidCredentials})
 			return
 		}
-
-		// Database error
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "whoami")
-			scope.SetExtra("error_type", "database")
-			scope.SetExtra("user_id", userID)
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "failed to retrieve user"})
+		a.toSentry(c, "login", "db", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrProcessLogin]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrProcessLogin})
 		return
 	}
 
-	// Success! Return user info
-	response := models.User{
+	if err := bcrypt.CompareHashAndPassword(user.Password, []byte(req.Password)); err != nil {
+		status, ok := errorStatusMap[ErrInvalidCredentials]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrInvalidCredentials})
+		return
+	}
+
+	// Generate tokens
+	accessToken, refreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), user.ID)
+	if err != nil {
+		a.toSentry(c, "login", "jwt", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrGenerateTokens]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrGenerateTokens})
+		return
+	}
+
+	// Store refresh token in database
+	refreshTokenExpiry := time.Now().Add(30 * 24 * time.Hour) // 30 days
+	_, err = a.db.CreateRefreshToken(c.Request.Context(), models.NewRefreshToken{
+		UserID:    user.ID,
+		Token:     refreshToken,
+		ExpiresAt: refreshTokenExpiry,
+	})
+	if err != nil {
+		a.toSentry(c, "login", "db_token", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrGenerateTokens]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrGenerateTokens})
+		return
+	}
+
+	c.JSON(http.StatusOK, TokenResponse{AccessToken: accessToken, RefreshToken: refreshToken})
+}
+
+func (a *App) HandleRefresh(c *gin.Context) {
+	var req RefreshRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		a.toSentry(c, "refresh", "unmarshal", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrUnmarshal]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrUnmarshal})
+		return
+	}
+
+	// Parse refresh token to validate JWT
+	claims, err := a.jwt.ParseRefreshToken(c.Request.Context(), req.RefreshToken)
+	if err != nil {
+		a.toSentry(c, "refresh", "jwt", sentry.LevelError, err)
+		var errCode string
+		switch {
+		case errors.Is(err, jwt.ErrExpiredToken):
+			errCode = ErrExpiredToken
+		case errors.Is(err, jwt.ErrInvalidToken):
+			errCode = ErrInvalidToken
+		default:
+			errCode = ErrUnauthorized
+		}
+		status, ok := errorStatusMap[errCode]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: errCode})
+		return
+	}
+
+	// Check if refresh token exists in database and is not revoked
+	storedToken, err := a.db.GetRefreshTokenByToken(c.Request.Context(), []byte(req.RefreshToken))
+	if err != nil {
+		if errors.Is(err, sqldb.ErrDBNotFound) {
+			status, ok := errorStatusMap[ErrInvalidToken]
+			if !ok {
+				status = http.StatusInternalServerError
+			}
+			c.JSON(status, ErrorResponse{Error: ErrInvalidToken})
+			return
+		}
+		a.toSentry(c, "refresh", "db", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrUnauthorized]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrUnauthorized})
+		return
+	}
+
+	// Check if token is revoked
+	if storedToken.RevokedAt != nil {
+		status, ok := errorStatusMap[ErrInvalidToken]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrInvalidToken})
+		return
+	}
+
+	// Check if token is expired
+	if time.Now().After(storedToken.ExpiresAt) {
+		status, ok := errorStatusMap[ErrExpiredToken]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrExpiredToken})
+		return
+	}
+
+	// Generate new tokens
+	accessToken, newRefreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), claims.Subject)
+	if err != nil {
+		a.toSentry(c, "refresh", "jwt_generate", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrGenerateTokens]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrGenerateTokens})
+		return
+	}
+
+	// Revoke old refresh token
+	if err := a.db.RevokeRefreshToken(c.Request.Context(), storedToken.ID); err != nil {
+		a.toSentry(c, "refresh", "db_revoke", sentry.LevelError, err)
+		// Don't fail the request if revocation fails, just log it
+	}
+
+	// Store new refresh token in database
+	refreshTokenExpiry := time.Now().Add(7 * 24 * time.Hour) // 7 days
+	_, err = a.db.CreateRefreshToken(c.Request.Context(), models.NewRefreshToken{
+		UserID:    claims.Subject,
+		Token:     newRefreshToken,
+		ExpiresAt: refreshTokenExpiry,
+	})
+	if err != nil {
+		a.toSentry(c, "refresh", "db_token", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrGenerateTokens]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrGenerateTokens})
+		return
+	}
+
+	c.JSON(http.StatusOK, TokenResponse{AccessToken: accessToken, RefreshToken: newRefreshToken})
+}
+
+func (a *App) HandleWhoAmI(c *gin.Context) {
+	userID, err := middleware.GetClaims(c)
+	if err != nil {
+		status, ok := errorStatusMap[ErrUnauthorized]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrUnauthorized})
+		return
+	}
+
+	user, err := a.db.GetUserByID(c.Request.Context(), userID)
+	if err != nil {
+		a.toSentry(c, "whoami", "db", sentry.LevelError, err)
+		if errors.Is(err, sqldb.ErrDBNotFound) {
+			status, ok := errorStatusMap[ErrUserNotFound]
+			if !ok {
+				status = http.StatusInternalServerError
+			}
+			c.JSON(status, ErrorResponse{Error: ErrUserNotFound})
+		} else {
+			status, ok := errorStatusMap[ErrVerifyUser]
+			if !ok {
+				status = http.StatusInternalServerError
+			}
+			c.JSON(status, ErrorResponse{Error: ErrVerifyUser})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, UserResponse{
 		ID:        user.ID,
 		Name:      user.Name,
 		Account:   user.Account,
@@ -737,80 +486,49 @@ func (a *App) HandleWhoAmI(w http.ResponseWriter, r *http.Request) {
 		IsAdmin:   user.IsAdmin,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to write response: %v", err)
-	}
+	})
 }
 
-func (a *App) HandleListUsers(w http.ResponseWriter, r *http.Request) {
-	// Get all users from database
-	users, err := a.db.ListUsers(r.Context())
+func (a *App) HandleListUsers(c *gin.Context) {
+	users, err := a.db.ListUsers(c.Request.Context())
 	if err != nil {
-		a.sentry.WithScope(func(scope *sentry.Scope) {
-			scope.SetTag("handler", "list_users")
-			scope.SetExtra("error_type", "database")
-			scope.SetLevel(sentry.LevelError)
-			a.sentry.CaptureException(err)
-		})
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "failed to retrieve users"})
+		a.toSentry(c, "list_users", "db", sentry.LevelError, err)
+		status, ok := errorStatusMap[ErrRetrieveUsers]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{Error: ErrRetrieveUsers})
 		return
 	}
 
-	// Transform users to exclude sensitive data (passwords)
-	type UserResponse struct {
-		ID        string    `json:"id"`
-		Name      string    `json:"name"`
-		Account   string    `json:"account"`
-		Email     string    `json:"email"`
-		Bio       *string   `json:"bio"`
-		DOB       *string   `json:"dob"`
-		City      *string   `json:"city"`
-		Phone     *string   `json:"phone"`
-		IsAdmin   bool      `json:"is_admin"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
+	response := make([]UserResponse, 0, len(users))
+	for _, u := range users {
+		response = append(response, UserResponse{
+			ID:        u.ID,
+			Name:      u.Name,
+			Account:   u.Account,
+			Email:     u.Email,
+			Bio:       u.Bio,
+			DOB:       u.DOB,
+			City:      u.City,
+			Phone:     u.Phone,
+			IsAdmin:   u.IsAdmin,
+			CreatedAt: u.CreatedAt,
+			UpdatedAt: u.UpdatedAt,
+		})
 	}
 
-	response := make([]UserResponse, len(users))
-	for i, user := range users {
-		response[i] = UserResponse{
-			ID:        user.ID,
-			Name:      user.Name,
-			Account:   user.Account,
-			Email:     user.Email,
-			Bio:       user.Bio,
-			DOB:       user.DOB,
-			City:      user.City,
-			Phone:     user.Phone,
-			IsAdmin:   user.IsAdmin,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to write response: %v", err)
-	}
+	c.JSON(http.StatusOK, response)
 }
 
-// =============================================================================
-// Helpers
-// =============================================================================
-
-// extractBearerToken extracts the token from "Bearer <token>" format
-func extractBearerToken(authHeader string) (string, error) {
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-		return "", ErrInvalidAuthHeader
-	}
-	return parts[1], nil
+func (a *App) toSentry(c *gin.Context, handler, errType string, level sentry.Level, err error) {
+	a.sentry.WithScope(func(scope *sentry.Scope) {
+		scope.SetTag("handler", handler)
+		scope.SetExtra("error_type", errType)
+		scope.SetLevel(level)
+		if reqID := c.GetHeader("X-Request-ID"); reqID != "" {
+			scope.SetTag("request_id", reqID)
+		}
+		a.sentry.CaptureException(err)
+	})
 }

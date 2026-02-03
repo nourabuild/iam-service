@@ -2,38 +2,54 @@
 package app
 
 import (
-	"net/http"
+	"github.com/gin-gonic/gin"
+	"github.com/nourabuild/iam-service/internal/sdk/middleware"
 )
 
 // ----------------------------------------------------------------------------
 // Route Registration
 // ----------------------------------------------------------------------------
 
-// RegisterRoutes configures all application routes and returns the HTTP handler
-func (a *App) RegisterRoutes() http.Handler {
-	mux := http.NewServeMux()
+func (a *App) RegisterRoutes() *gin.Engine {
+	router := gin.New()
 
-	a.registerHealthRoutes(mux)
-	a.registerAuthRoutes(mux)
+	// Global middleware chain
+	router.Use(gin.Recovery())       // Panic recovery
+	router.Use(middleware.Logger())  // Custom slog logger
+	router.Use(middleware.CORS())    // CORS support
 
-	return mux
-}
+	// API v1 route group
+	v1 := router.Group("/api/v1")
+	{
+		// Health check routes (public)
+		health := v1.Group("/health")
+		{
+			health.GET("/readiness", a.HandleReadiness)
+			health.GET("/liveness", a.HandleLiveness)
+		}
 
-func (a *App) registerHealthRoutes(mux *http.ServeMux) {
-	// Public routes
-	mux.HandleFunc("GET /api/v1/health/readiness", a.HandleReadiness)
-	mux.HandleFunc("GET /api/v1/health/liveness", a.HandleLiveness)
-}
+		// Auth routes (public)
+		auth := v1.Group("/auth")
+		{
+			auth.POST("/register", a.HandleRegister)
+			auth.POST("/login", a.HandleLogin)
+			auth.POST("/refresh", a.HandleRefresh)
+		}
 
-func (a *App) registerAuthRoutes(mux *http.ServeMux) {
-	// Public auth routes
-	mux.HandleFunc("POST /api/v1/auth/register", a.HandleRegister)
-	mux.HandleFunc("POST /api/v1/auth/login", a.HandleLogin)
-	mux.HandleFunc("POST /api/v1/auth/refresh", a.HandleRefresh)
+		// User routes (protected - requires authentication)
+		user := v1.Group("/user")
+		user.Use(middleware.Authen(a.jwt))
+		{
+			user.GET("/whoami", a.HandleWhoAmI)
+		}
 
-	// Protected routes
-	mux.HandleFunc("GET /api/v1/user/whoami", a.HandleWhoAmI)
+		// Admin routes (protected - requires admin role)
+		// admin := v1.Group("/admin")
+		// admin.Use(middleware.Auth(a.jwt))
+		// {
+		// 	admin.GET("/users", a.HandleListUsers)
+		// }
+	}
 
-	// Admin-only routes
-	mux.HandleFunc("GET /api/v1/admin/users", a.RequireAdmin(a.HandleListUsers))
+	return router
 }
