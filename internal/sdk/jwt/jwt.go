@@ -33,6 +33,16 @@ var (
 )
 
 // =============================================================================
+// Custom Claims
+// =============================================================================
+
+// CustomClaims extends the standard JWT claims with application-specific fields
+type CustomClaims struct {
+	IsAdmin bool `json:"is_admin"`
+	jwt.RegisteredClaims
+}
+
+// =============================================================================
 // Token Service
 // =============================================================================
 
@@ -107,25 +117,25 @@ func NewTokenService() *TokenService {
 // GenerateTokens creates a new access and refresh token pair.
 //
 // Call this after a user successfully logs in.
-// The subject is typically the user's ID.
+// The subject is typically the user's ID, and isAdmin indicates admin privileges.
 //
 // Example:
 //
-//	accessToken, refreshToken, err := service.GenerateTokens(ctx, "user-123")
+//	accessToken, refreshToken, err := service.GenerateTokens(ctx, "user-123", false)
 //	if err != nil {
 //	    return err
 //	}
-func (s *TokenService) GenerateTokens(ctx context.Context, subject string) (accessToken, refreshToken string, err error) {
+func (s *TokenService) GenerateTokens(ctx context.Context, subject string, isAdmin bool) (accessToken, refreshToken string, err error) {
 	now := time.Now()
 
 	// Create access token
-	accessToken, err = s.createToken(subject, now.Add(s.accessTokenExpiry), s.accessSecret)
+	accessToken, err = s.createToken(subject, isAdmin, now.Add(s.accessTokenExpiry), s.accessSecret)
 	if err != nil {
 		return "", "", fmt.Errorf("creating access token: %w", err)
 	}
 
 	// Create refresh token
-	refreshToken, err = s.createToken(subject, now.Add(s.refreshTokenExpiry), s.refreshSecret)
+	refreshToken, err = s.createToken(subject, isAdmin, now.Add(s.refreshTokenExpiry), s.refreshSecret)
 	if err != nil {
 		return "", "", fmt.Errorf("creating refresh token: %w", err)
 	}
@@ -145,12 +155,13 @@ func (s *TokenService) GenerateTokens(ctx context.Context, subject string) (acce
 //	    return
 //	}
 //	userID := claims.Subject
-func (s *TokenService) ParseAccessToken(ctx context.Context, tokenString string) (*jwt.RegisteredClaims, error) {
+//	isAdmin := claims.IsAdmin
+func (s *TokenService) ParseAccessToken(ctx context.Context, tokenString string) (*CustomClaims, error) {
 	return s.parseToken(tokenString, s.accessSecret)
 }
 
 // ParseRefreshToken validates a refresh token and returns its claims.
-func (s *TokenService) ParseRefreshToken(ctx context.Context, tokenString string) (*jwt.RegisteredClaims, error) {
+func (s *TokenService) ParseRefreshToken(ctx context.Context, tokenString string) (*CustomClaims, error) {
 	return s.parseToken(tokenString, s.refreshSecret)
 }
 
@@ -172,8 +183,8 @@ func (s *TokenService) RefreshTokens(ctx context.Context, refreshToken string) (
 		return "", "", fmt.Errorf("invalid refresh token: %w", err)
 	}
 
-	// Create new tokens for the same user
-	return s.GenerateTokens(ctx, claims.Subject)
+	// Create new tokens for the same user with same admin status
+	return s.GenerateTokens(ctx, claims.Subject, claims.IsAdmin)
 }
 
 // ValidateAccessToken checks if a token is valid.
@@ -207,15 +218,18 @@ func (s *TokenService) GetSubjectFromToken(ctx context.Context, tokenString stri
 // =============================================================================
 
 // createToken builds and signs a JWT with the given parameters.
-func (s *TokenService) createToken(subject string, expiresAt time.Time, secret []byte) (string, error) {
+func (s *TokenService) createToken(subject string, isAdmin bool, expiresAt time.Time, secret []byte) (string, error) {
 	now := time.Now()
 
-	claims := jwt.RegisteredClaims{
-		Subject:   subject,
-		Issuer:    s.issuer,
-		IssuedAt:  jwt.NewNumericDate(now),
-		ExpiresAt: jwt.NewNumericDate(expiresAt),
-		NotBefore: jwt.NewNumericDate(now),
+	claims := CustomClaims{
+		IsAdmin: isAdmin,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   subject,
+			Issuer:    s.issuer,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			NotBefore: jwt.NewNumericDate(now),
+		},
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -223,12 +237,12 @@ func (s *TokenService) createToken(subject string, expiresAt time.Time, secret [
 }
 
 // parseToken validates a token string and extracts its claims.
-func (s *TokenService) parseToken(tokenString string, secret []byte) (*jwt.RegisteredClaims, error) {
+func (s *TokenService) parseToken(tokenString string, secret []byte) (*CustomClaims, error) {
 	if tokenString == "" {
 		return nil, ErrTokenNotFound
 	}
 
-	claims := &jwt.RegisteredClaims{}
+	claims := &CustomClaims{}
 
 	token, err := s.parser.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
 		// Verify signing method

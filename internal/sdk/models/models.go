@@ -16,7 +16,7 @@ type RefreshToken struct {
 
 type NewRefreshToken struct {
 	UserID    string
-	Token     string
+	Token     []byte
 	ExpiresAt time.Time
 }
 

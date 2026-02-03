@@ -14,9 +14,9 @@ func (a *App) RegisterRoutes() *gin.Engine {
 	router := gin.New()
 
 	// Global middleware chain
-	router.Use(gin.Recovery())       // Panic recovery
-	router.Use(middleware.Logger())  // Custom slog logger
-	router.Use(middleware.CORS())    // CORS support
+	router.Use(gin.Recovery())      // Panic recovery
+	router.Use(middleware.Logger()) // Custom slog logger
+	router.Use(middleware.CORS())   // CORS support
 
 	// API v1 route group
 	v1 := router.Group("/api/v1")
@@ -44,11 +44,11 @@ func (a *App) RegisterRoutes() *gin.Engine {
 		}
 
 		// Admin routes (protected - requires admin role)
-		// admin := v1.Group("/admin")
-		// admin.Use(middleware.Auth(a.jwt))
-		// {
-		// 	admin.GET("/users", a.HandleListUsers)
-		// }
+		admin := v1.Group("/admin")
+		admin.Use(middleware.Authen(a.jwt), middleware.Admin())
+		{
+			admin.GET("/users", a.HandleListUsers)
+		}
 	}
 
 	return router

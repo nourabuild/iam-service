@@ -20,60 +20,69 @@ import (
 
 const (
 	minPasswordLength = 8
+	minAccountLength  = 6
 	bcryptCost        = bcrypt.DefaultCost
 )
 
 const (
-	ErrUnmarshal          = "invalid_request_body"
-	ErrMissingFields      = "missing_required_fields"
-	ErrInvalidEmail       = "invalid_email"
-	ErrPasswordTooShort   = "password_too_short"
-	ErrUserExists         = "user_already_exists"
-	ErrInvalidCredentials = "invalid_credentials"
-	ErrUnauthorized       = "unauthorized"
-	ErrForbidden          = "forbidden"
-	ErrHashPassword       = "internal_hash_error"
-	ErrCreateUser         = "internal_create_user_error"
-	ErrProcessLogin       = "internal_login_error"
-	ErrRetrieveUsers      = "internal_retrieve_users_error"
-	ErrGenerateTokens     = "internal_generate_tokens_error"
-	ErrExpiredToken       = "expired_token"
-	ErrInvalidToken       = "invalid_token"
-	ErrMissingAuthHeader  = "missing_authorization_header"
-	ErrInvalidAuthHeader  = "invalid_authorization_header"
-	ErrUserNotFound       = "user_not_found"
-	ErrVerifyUser         = "internal_verify_user_error"
+	ErrUnmarshal             = "invalid_request_body"
+	ErrMissingFields         = "missing_required_fields"
+	ErrInvalidEmail          = "invalid_email"
+	ErrPasswordTooShort      = "password_too_short"
+	ErrPasswordNoUppercase   = "password_must_contain_uppercase"
+	ErrPasswordNoNumber      = "password_must_contain_number"
+	ErrPasswordNoSpecialChar = "password_must_contain_special_character"
+	ErrAccountTooShort       = "account_too_short"
+	ErrUserExists            = "user_already_exists"
+	ErrInvalidCredentials    = "invalid_credentials"
+	ErrUnauthorized          = "unauthorized"
+	ErrForbidden             = "forbidden"
+	ErrHashPassword          = "internal_hash_error"
+	ErrCreateUser            = "internal_create_user_error"
+	ErrProcessLogin          = "internal_login_error"
+	ErrRetrieveUsers         = "internal_retrieve_users_error"
+	ErrGenerateTokens        = "internal_generate_tokens_error"
+	ErrExpiredToken          = "expired_token"
+	ErrInvalidToken          = "invalid_token"
+	ErrMissingAuthHeader     = "missing_authorization_header"
+	ErrInvalidAuthHeader     = "invalid_authorization_header"
+	ErrUserNotFound          = "user_not_found"
+	ErrVerifyUser            = "internal_verify_user_error"
 )
 
 var errorStatusMap = map[string]int{
-	ErrUnmarshal:          http.StatusBadRequest,
-	ErrMissingFields:      http.StatusBadRequest,
-	ErrInvalidEmail:       http.StatusBadRequest,
-	ErrPasswordTooShort:   http.StatusBadRequest,
-	ErrUserExists:         http.StatusConflict,
-	ErrInvalidCredentials: http.StatusUnauthorized,
-	ErrUnauthorized:       http.StatusUnauthorized,
-	ErrForbidden:          http.StatusForbidden,
-	ErrHashPassword:       http.StatusInternalServerError,
-	ErrCreateUser:         http.StatusInternalServerError,
-	ErrProcessLogin:       http.StatusInternalServerError,
-	ErrRetrieveUsers:      http.StatusInternalServerError,
-	ErrGenerateTokens:     http.StatusInternalServerError,
-	ErrExpiredToken:       http.StatusUnauthorized,
-	ErrInvalidToken:       http.StatusUnauthorized,
-	ErrMissingAuthHeader:  http.StatusUnauthorized,
-	ErrInvalidAuthHeader:  http.StatusUnauthorized,
-	ErrUserNotFound:       http.StatusUnauthorized,
-	ErrVerifyUser:         http.StatusInternalServerError,
+	ErrUnmarshal:             http.StatusBadRequest,
+	ErrMissingFields:         http.StatusBadRequest,
+	ErrInvalidEmail:          http.StatusBadRequest,
+	ErrPasswordTooShort:      http.StatusBadRequest,
+	ErrPasswordNoUppercase:   http.StatusBadRequest,
+	ErrPasswordNoNumber:      http.StatusBadRequest,
+	ErrPasswordNoSpecialChar: http.StatusBadRequest,
+	ErrAccountTooShort:       http.StatusBadRequest,
+	ErrUserExists:            http.StatusConflict,
+	ErrInvalidCredentials:    http.StatusUnauthorized,
+	ErrUnauthorized:          http.StatusUnauthorized,
+	ErrForbidden:             http.StatusForbidden,
+	ErrHashPassword:          http.StatusInternalServerError,
+	ErrCreateUser:            http.StatusInternalServerError,
+	ErrProcessLogin:          http.StatusInternalServerError,
+	ErrRetrieveUsers:         http.StatusInternalServerError,
+	ErrGenerateTokens:        http.StatusInternalServerError,
+	ErrExpiredToken:          http.StatusUnauthorized,
+	ErrInvalidToken:          http.StatusUnauthorized,
+	ErrMissingAuthHeader:     http.StatusUnauthorized,
+	ErrInvalidAuthHeader:     http.StatusUnauthorized,
+	ErrUserNotFound:          http.StatusUnauthorized,
+	ErrVerifyUser:            http.StatusInternalServerError,
 }
 
 type LoginRequest struct {
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required"`
+	Account  string `json:"account"`
+	Password string `json:"password"`
 }
 
 type RefreshRequest struct {
-	RefreshToken string `json:"refresh_token" binding:"required"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 type TokenResponse struct {
@@ -138,56 +147,127 @@ func (a *App) HandleLiveness(c *gin.Context) {
 }
 
 func (a *App) HandleRegister(c *gin.Context) {
-	var req models.NewUser
-	if err := c.ShouldBindJSON(&req); err != nil {
-		a.toSentry(c, "register", "unmarshal", sentry.LevelError, err)
-		status, ok := errorStatusMap[ErrUnmarshal]
-		if !ok {
-			status = http.StatusInternalServerError
+	// Parse multipart form (for future file uploads)
+	if err := c.Request.ParseMultipartForm(10 << 20); err != nil { // 10 MB max
+		// Try JSON as fallback
+		if err := c.Request.ParseForm(); err != nil {
+			a.toSentry(c, "register", "parse_form", sentry.LevelError, err)
+			status, ok := errorStatusMap[ErrUnmarshal]
+			if !ok {
+				status = http.StatusInternalServerError
+			}
+			c.JSON(status, ErrorResponse{Error: ErrUnmarshal})
+			return
 		}
-		c.JSON(status, ErrorResponse{Error: ErrUnmarshal})
-		return
 	}
 
-	// Validate new user
-	var missing []string
+	// Get form values
+	name := c.PostForm("name")
+	account := c.PostForm("account")
+	email := c.PostForm("email")
+	password := c.PostForm("password")
+
+	// Create request object
+	req := models.NewUser{
+		Name:     name,
+		Account:  account,
+		Email:    email,
+		Password: []byte(password),
+	}
+
+	// Collect all validation errors
+	validationErrors := make(map[string]string)
+
+	// Check for missing fields
 	if req.Name == "" {
-		missing = append(missing, "name")
+		validationErrors["name"] = "name_required"
 	}
 	if req.Account == "" {
-		missing = append(missing, "account")
+		validationErrors["account"] = "account_required"
 	}
 	if req.Email == "" {
-		missing = append(missing, "email")
+		validationErrors["email"] = "email_required"
 	}
 	if len(req.Password) == 0 {
-		missing = append(missing, "password")
+		validationErrors["password"] = "password_required"
 	}
 
-	if len(missing) > 0 {
+	// If we have missing fields, return early
+	if len(validationErrors) > 0 {
 		status, ok := errorStatusMap[ErrMissingFields]
 		if !ok {
 			status = http.StatusInternalServerError
 		}
-		c.JSON(status, ErrorResponse{Error: ErrMissingFields})
+		c.JSON(status, ErrorResponse{
+			Error:   ErrMissingFields,
+			Details: validationErrors,
+		})
 		return
 	}
 
+	// Validate email format
 	if _, err := mail.ParseAddress(req.Email); err != nil {
-		status, ok := errorStatusMap[ErrInvalidEmail]
-		if !ok {
-			status = http.StatusInternalServerError
-		}
-		c.JSON(status, ErrorResponse{Error: ErrInvalidEmail})
-		return
+		validationErrors["email"] = "invalid_email_format"
 	}
 
+	// Validate account length
+	if len(req.Account) < minAccountLength {
+		validationErrors["account"] = "account_too_short"
+	}
+
+	// Validate password length
 	if len(req.Password) < minPasswordLength {
-		status, ok := errorStatusMap[ErrPasswordTooShort]
+		validationErrors["password"] = "password_too_short"
+	}
+
+	// Validate password complexity
+	var hasUpper, hasNumber, hasSpecial bool
+	for _, char := range string(req.Password) {
+		switch {
+		case char >= 'A' && char <= 'Z':
+			hasUpper = true
+		case char >= '0' && char <= '9':
+			hasNumber = true
+		case (char >= '!' && char <= '/') || (char >= ':' && char <= '@') || (char >= '[' && char <= '`') || (char >= '{' && char <= '~'):
+			hasSpecial = true
+		}
+	}
+
+	if !hasUpper {
+		validationErrors["password"] = "password_no_uppercase"
+	} else if !hasNumber {
+		validationErrors["password"] = "password_no_number"
+	} else if !hasSpecial {
+		validationErrors["password"] = "password_no_special_char"
+	}
+
+	// If we have any validation errors, return them
+	if len(validationErrors) > 0 {
+		// Determine the primary error code
+		errCode := ErrInvalidEmail
+		if _, hasAccountErr := validationErrors["account"]; hasAccountErr {
+			errCode = ErrAccountTooShort
+		}
+		if _, hasPasswordErr := validationErrors["password"]; hasPasswordErr {
+			if len(req.Password) < minPasswordLength {
+				errCode = ErrPasswordTooShort
+			} else if !hasUpper {
+				errCode = ErrPasswordNoUppercase
+			} else if !hasNumber {
+				errCode = ErrPasswordNoNumber
+			} else if !hasSpecial {
+				errCode = ErrPasswordNoSpecialChar
+			}
+		}
+
+		status, ok := errorStatusMap[errCode]
 		if !ok {
 			status = http.StatusInternalServerError
 		}
-		c.JSON(status, ErrorResponse{Error: ErrPasswordTooShort})
+		c.JSON(status, ErrorResponse{
+			Error:   errCode,
+			Details: validationErrors,
+		})
 		return
 	}
 
@@ -230,7 +310,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 	}
 
 	// Generate tokens
-	accessToken, refreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), createdUser.ID)
+	accessToken, refreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), createdUser.ID, createdUser.IsAdmin)
 	if err != nil {
 		a.toSentry(c, "register", "jwt", sentry.LevelError, err)
 		status, ok := errorStatusMap[ErrGenerateTokens]
@@ -245,7 +325,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 	refreshTokenExpiry := time.Now().Add(7 * 24 * time.Hour) // 7 days
 	_, err = a.db.CreateRefreshToken(c.Request.Context(), models.NewRefreshToken{
 		UserID:    createdUser.ID,
-		Token:     refreshToken,
+		Token:     []byte(refreshToken),
 		ExpiresAt: refreshTokenExpiry,
 	})
 	if err != nil {
@@ -273,7 +353,31 @@ func (a *App) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	user, err := a.db.GetUserByEmail(c.Request.Context(), req.Email)
+	// Collect all validation errors
+	validationErrors := make(map[string]string)
+
+	// Check for missing fields
+	if req.Account == "" {
+		validationErrors["account"] = "account_required"
+	}
+	if req.Password == "" {
+		validationErrors["password"] = "password_required"
+	}
+
+	// If we have missing fields, return early
+	if len(validationErrors) > 0 {
+		status, ok := errorStatusMap[ErrMissingFields]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{
+			Error:   ErrMissingFields,
+			Details: validationErrors,
+		})
+		return
+	}
+
+	user, err := a.db.GetUserByAccount(c.Request.Context(), req.Account)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			status, ok := errorStatusMap[ErrInvalidCredentials]
@@ -302,7 +406,7 @@ func (a *App) HandleLogin(c *gin.Context) {
 	}
 
 	// Generate tokens
-	accessToken, refreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), user.ID)
+	accessToken, refreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), user.ID, user.IsAdmin)
 	if err != nil {
 		a.toSentry(c, "login", "jwt", sentry.LevelError, err)
 		status, ok := errorStatusMap[ErrGenerateTokens]
@@ -317,7 +421,7 @@ func (a *App) HandleLogin(c *gin.Context) {
 	refreshTokenExpiry := time.Now().Add(30 * 24 * time.Hour) // 30 days
 	_, err = a.db.CreateRefreshToken(c.Request.Context(), models.NewRefreshToken{
 		UserID:    user.ID,
-		Token:     refreshToken,
+		Token:     []byte(refreshToken),
 		ExpiresAt: refreshTokenExpiry,
 	})
 	if err != nil {
@@ -342,6 +446,27 @@ func (a *App) HandleRefresh(c *gin.Context) {
 			status = http.StatusInternalServerError
 		}
 		c.JSON(status, ErrorResponse{Error: ErrUnmarshal})
+		return
+	}
+
+	// Collect all validation errors
+	validationErrors := make(map[string]string)
+
+	// Check for missing fields
+	if req.RefreshToken == "" {
+		validationErrors["refresh_token"] = "refresh_token_required"
+	}
+
+	// If we have missing fields, return early
+	if len(validationErrors) > 0 {
+		status, ok := errorStatusMap[ErrMissingFields]
+		if !ok {
+			status = http.StatusInternalServerError
+		}
+		c.JSON(status, ErrorResponse{
+			Error:   ErrMissingFields,
+			Details: validationErrors,
+		})
 		return
 	}
 
@@ -407,7 +532,7 @@ func (a *App) HandleRefresh(c *gin.Context) {
 	}
 
 	// Generate new tokens
-	accessToken, newRefreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), claims.Subject)
+	accessToken, newRefreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), claims.Subject, claims.IsAdmin)
 	if err != nil {
 		a.toSentry(c, "refresh", "jwt_generate", sentry.LevelError, err)
 		status, ok := errorStatusMap[ErrGenerateTokens]
@@ -425,10 +550,10 @@ func (a *App) HandleRefresh(c *gin.Context) {
 	}
 
 	// Store new refresh token in database
-	refreshTokenExpiry := time.Now().Add(7 * 24 * time.Hour) // 7 days
+	refreshTokenExpiry := time.Now().Add(30 * 24 * time.Hour) // 30 days
 	_, err = a.db.CreateRefreshToken(c.Request.Context(), models.NewRefreshToken{
 		UserID:    claims.Subject,
-		Token:     newRefreshToken,
+		Token:     []byte(newRefreshToken),
 		ExpiresAt: refreshTokenExpiry,
 	})
 	if err != nil {

@@ -159,7 +159,7 @@ func (s *service) Close() error {
 func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, error) {
 	const query = `
 		SELECT
-			id,
+			id::text,
 			name,
 			account,
 			email,
@@ -171,21 +171,22 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, 
 			is_admin,
 			created_at,
 			updated_at
-		FROM users
+		FROM auth.users
 		WHERE id = $1
 	`
 
 	var user models.User
+	var bio, dob, city, phone sql.NullString
 	err := s.db.QueryRowContext(ctx, query, userID).Scan(
 		&user.ID,
 		&user.Name,
 		&user.Account,
 		&user.Email,
 		&user.Password,
-		&user.Bio,
-		&user.DOB,
-		&user.City,
-		&user.Phone,
+		&bio,
+		&dob,
+		&city,
+		&phone,
 		&user.IsAdmin,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -198,6 +199,11 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, 
 		return models.User{}, fmt.Errorf("selecting user: %w", err)
 	}
 
+	user.Bio = StringPtr(bio)
+	user.DOB = StringPtr(dob)
+	user.City = StringPtr(city)
+	user.Phone = StringPtr(phone)
+
 	return user, nil
 }
 
@@ -205,7 +211,7 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, 
 func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User, error) {
 	const query = `
 		SELECT
-			id,
+			id::text,
 			name,
 			account,
 			email,
@@ -217,21 +223,22 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User
 			is_admin,
 			created_at,
 			updated_at
-		FROM users
+		FROM auth.users
 		WHERE email = $1
 	`
 
 	var user models.User
+	var bio, dob, city, phone sql.NullString
 	err := s.db.QueryRowContext(ctx, query, email).Scan(
 		&user.ID,
 		&user.Name,
 		&user.Account,
 		&user.Email,
 		&user.Password,
-		&user.Bio,
-		&user.DOB,
-		&user.City,
-		&user.Phone,
+		&bio,
+		&dob,
+		&city,
+		&phone,
 		&user.IsAdmin,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -244,6 +251,11 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User
 		return models.User{}, fmt.Errorf("selecting user by email: %w", err)
 	}
 
+	user.Bio = StringPtr(bio)
+	user.DOB = StringPtr(dob)
+	user.City = StringPtr(city)
+	user.Phone = StringPtr(phone)
+
 	return user, nil
 }
 
@@ -251,7 +263,7 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User
 func (s *service) GetUserByAccount(ctx context.Context, account string) (models.User, error) {
 	const query = `
 		SELECT
-			id,
+			id::text,
 			name,
 			account,
 			email,
@@ -263,21 +275,22 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (models.
 			is_admin,
 			created_at,
 			updated_at
-		FROM users
+		FROM auth.users
 		WHERE account = $1
 	`
 
 	var user models.User
+	var bio, dob, city, phone sql.NullString
 	err := s.db.QueryRowContext(ctx, query, account).Scan(
 		&user.ID,
 		&user.Name,
 		&user.Account,
 		&user.Email,
 		&user.Password,
-		&user.Bio,
-		&user.DOB,
-		&user.City,
-		&user.Phone,
+		&bio,
+		&dob,
+		&city,
+		&phone,
 		&user.IsAdmin,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -290,18 +303,24 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (models.
 		return models.User{}, fmt.Errorf("selecting user by account: %w", err)
 	}
 
+	user.Bio = StringPtr(bio)
+	user.DOB = StringPtr(dob)
+	user.City = StringPtr(city)
+	user.Phone = StringPtr(phone)
+
 	return user, nil
 }
 
 // CreateUser inserts a new user into the database
 func (s *service) CreateUser(ctx context.Context, nu models.NewUser) (models.User, error) {
 	const query = `
-		INSERT INTO users (name, account, email, password, is_admin)
+		INSERT INTO auth.users (name, account, email, password, is_admin)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, name, account, email, password, bio, dob, city, phone, is_admin, created_at, updated_at
+		RETURNING id::text, name, account, email, password, bio, dob, city, phone, is_admin, created_at, updated_at
 	`
 
 	var user models.User
+	var bio, dob, city, phone sql.NullString
 
 	err := s.db.QueryRowContext(ctx, query,
 		nu.Name,
@@ -315,10 +334,10 @@ func (s *service) CreateUser(ctx context.Context, nu models.NewUser) (models.Use
 		&user.Account,
 		&user.Email,
 		&user.Password,
-		&user.Bio,
-		&user.DOB,
-		&user.City,
-		&user.Phone,
+		&bio,
+		&dob,
+		&city,
+		&phone,
 		&user.IsAdmin,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -328,8 +347,14 @@ func (s *service) CreateUser(ctx context.Context, nu models.NewUser) (models.Use
 		if isPgError(err, uniqueViolation) {
 			return models.User{}, ErrDBDuplicatedEntry
 		}
+		log.Printf("DEBUG CreateUser error: %v", err)
 		return models.User{}, fmt.Errorf("creating user: %w", err)
 	}
+
+	user.Bio = StringPtr(bio)
+	user.DOB = StringPtr(dob)
+	user.City = StringPtr(city)
+	user.Phone = StringPtr(phone)
 
 	return user, nil
 }
@@ -338,7 +363,7 @@ func (s *service) CreateUser(ctx context.Context, nu models.NewUser) (models.Use
 func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 	const query = `
 		SELECT
-			id,
+			id::text,
 			name,
 			account,
 			email,
@@ -350,7 +375,7 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 			is_admin,
 			created_at,
 			updated_at
-		FROM users
+		FROM auth.users
 		ORDER BY created_at DESC
 	`
 
@@ -363,16 +388,17 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 	var users []models.User
 	for rows.Next() {
 		var user models.User
+		var bio, dob, city, phone sql.NullString
 		err := rows.Scan(
 			&user.ID,
 			&user.Name,
 			&user.Account,
 			&user.Email,
 			&user.Password,
-			&user.Bio,
-			&user.DOB,
-			&user.City,
-			&user.Phone,
+			&bio,
+			&dob,
+			&city,
+			&phone,
 			&user.IsAdmin,
 			&user.CreatedAt,
 			&user.UpdatedAt,
@@ -380,6 +406,10 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 		if err != nil {
 			return nil, fmt.Errorf("scanning user: %w", err)
 		}
+		user.Bio = StringPtr(bio)
+		user.DOB = StringPtr(dob)
+		user.City = StringPtr(city)
+		user.Phone = StringPtr(phone)
 		users = append(users, user)
 	}
 
@@ -397,9 +427,9 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 // CreateRefreshToken inserts a new refresh token into the database
 func (s *service) CreateRefreshToken(ctx context.Context, nrt models.NewRefreshToken) (models.RefreshToken, error) {
 	const query = `
-		INSERT INTO refresh_tokens (user_id, token, expires_at)
+		INSERT INTO auth.refresh_tokens (user_id, token, expires_at)
 		VALUES ($1, $2, $3)
-		RETURNING id, user_id, token, expires_at, revoked_at, created_at, updated_at
+		RETURNING id::text, user_id::text, token, expires_at, revoked_at, created_at, updated_at
 	`
 
 	var rt models.RefreshToken
@@ -431,14 +461,14 @@ func (s *service) CreateRefreshToken(ctx context.Context, nrt models.NewRefreshT
 func (s *service) GetRefreshTokenByToken(ctx context.Context, token []byte) (models.RefreshToken, error) {
 	const query = `
 		SELECT
-			id,
-			user_id,
+			id::text,
+			user_id::text,
 			token,
 			expires_at,
 			revoked_at,
 			created_at,
 			updated_at
-		FROM refresh_tokens
+		FROM auth.refresh_tokens
 		WHERE token = $1
 	`
 
@@ -466,7 +496,7 @@ func (s *service) GetRefreshTokenByToken(ctx context.Context, token []byte) (mod
 // RevokeRefreshToken marks a refresh token as revoked
 func (s *service) RevokeRefreshToken(ctx context.Context, tokenID string) error {
 	const query = `
-		UPDATE refresh_tokens
+		UPDATE auth.refresh_tokens
 		SET revoked_at = CURRENT_TIMESTAMP,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
@@ -492,7 +522,7 @@ func (s *service) RevokeRefreshToken(ctx context.Context, tokenID string) error 
 // DeleteExpiredRefreshTokens removes all expired refresh tokens from the database
 func (s *service) DeleteExpiredRefreshTokens(ctx context.Context) error {
 	const query = `
-		DELETE FROM refresh_tokens
+		DELETE FROM auth.refresh_tokens
 		WHERE expires_at < CURRENT_TIMESTAMP
 	`
 
@@ -507,7 +537,7 @@ func (s *service) DeleteExpiredRefreshTokens(ctx context.Context) error {
 // DeleteRefreshTokensByUserID removes all refresh tokens for a specific user
 func (s *service) DeleteRefreshTokensByUserID(ctx context.Context, userID string) error {
 	const query = `
-		DELETE FROM refresh_tokens
+		DELETE FROM auth.refresh_tokens
 		WHERE user_id = $1
 	`
 
