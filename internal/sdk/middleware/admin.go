@@ -8,7 +8,7 @@ import (
 
 func Admin() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get is_admin from context (set by Authen middleware)
+		// Get is_admin from context (set by Authenticate middleware).
 		isAdminVal, exists := c.Get(IsAdminKey)
 		if !exists {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})

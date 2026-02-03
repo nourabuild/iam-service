@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -72,11 +73,13 @@ func NewTokenService() *TokenService {
 	// Read secrets from environment variables
 	accessSecret := os.Getenv("JWT_ACCESS_SECRET")
 	if accessSecret == "" {
+		log.Print("jwt: JWT_ACCESS_SECRET not set; using insecure default")
 		accessSecret = "default-access-secret-change-in-production!"
 	}
 
 	refreshSecret := os.Getenv("JWT_REFRESH_SECRET")
 	if refreshSecret == "" {
+		log.Print("jwt: JWT_REFRESH_SECRET not set; using insecure default")
 		refreshSecret = "default-refresh-secret-change-in-production"
 	}
 

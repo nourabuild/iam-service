@@ -38,14 +38,14 @@ func (a *App) RegisterRoutes() *gin.Engine {
 
 		// User routes (protected - requires authentication)
 		user := v1.Group("/user")
-		user.Use(middleware.Authen(a.jwt))
+		user.Use(middleware.Authenticate(a.jwt))
 		{
 			user.GET("/whoami", a.HandleWhoAmI)
 		}
 
 		// Admin routes (protected - requires admin role)
 		admin := v1.Group("/admin")
-		admin.Use(middleware.Authen(a.jwt), middleware.Admin())
+		admin.Use(middleware.Authenticate(a.jwt), middleware.Admin())
 		{
 			admin.GET("/users", a.HandleListUsers)
 		}

@@ -1,0 +1,56 @@
+package app
+
+import (
+	"context"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
+	"github.com/nourabuild/iam-service/internal/services/sentry"
+)
+
+func writeError(c *gin.Context, errCode string, details map[string]string) {
+	response := ErrorResponse{Error: errCode}
+	if len(details) > 0 {
+		response.Details = details
+	}
+	c.JSON(statusForError(errCode), response)
+}
+
+func userToResponse(user models.User) UserResponse {
+	return UserResponse{
+		ID:        user.ID,
+		Name:      user.Name,
+		Account:   user.Account,
+		Email:     user.Email,
+		Bio:       user.Bio,
+		DOB:       user.DOB,
+		City:      user.City,
+		Phone:     user.Phone,
+		IsAdmin:   user.IsAdmin,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+	}
+}
+
+func (a *App) storeRefreshToken(ctx context.Context, userID, refreshToken string, ttl time.Duration) error {
+	expiresAt := time.Now().Add(ttl)
+	_, err := a.db.CreateRefreshToken(ctx, models.NewRefreshToken{
+		UserID:    userID,
+		Token:     []byte(refreshToken),
+		ExpiresAt: expiresAt,
+	})
+	return err
+}
+
+func (a *App) toSentry(c *gin.Context, handler, errType string, level sentry.Level, err error) {
+	a.sentry.WithScope(func(scope *sentry.Scope) {
+		scope.SetTag("handler", handler)
+		scope.SetExtra("error_type", errType)
+		scope.SetLevel(level)
+		if reqID := c.GetHeader("X-Request-ID"); reqID != "" {
+			scope.SetTag("request_id", reqID)
+		}
+		a.sentry.CaptureException(err)
+	})
+}

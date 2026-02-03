@@ -47,7 +47,7 @@ func run(logger *slog.Logger) error {
 	jwtService := jwt.NewTokenService()
 
 	// 5. App Initialization
-	app := app.NewApp(
+	iamApp := app.NewApp(
 		sqldb.New(),
 		sentryService,
 		jwtService,
@@ -58,7 +58,7 @@ func run(logger *slog.Logger) error {
 	// 7. Modern Server with configured timeouts
 	srv := &http.Server{
 		Addr:         ":" + getEnv("PORT", "8080"),
-		Handler:      app.RegisterRoutes(),
+		Handler:      iamApp.RegisterRoutes(),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,

@@ -98,13 +98,17 @@ func (s *service) Health() map[string]string {
 	defer cancel()
 
 	stats := make(map[string]string)
+	const (
+		openConnectionsWarn = 40
+		waitCountWarn       = 1000
+	)
 
 	// Ping the database
 	err := s.db.PingContext(ctx)
 	if err != nil {
 		stats["status"] = "down"
 		stats["error"] = fmt.Sprintf("db down: %v", err)
-		log.Fatalf("db down: %v", err) // Log the error and terminate the program
+		log.Printf("db down: %v", err)
 		return stats
 	}
 
@@ -123,11 +127,11 @@ func (s *service) Health() map[string]string {
 	stats["max_lifetime_closed"] = strconv.FormatInt(dbStats.MaxLifetimeClosed, 10)
 
 	// Evaluate stats to provide a health message
-	if dbStats.OpenConnections > 40 { // Assuming 50 is the max for this example
+	if dbStats.OpenConnections > openConnectionsWarn {
 		stats["message"] = "The database is experiencing heavy load."
 	}
 
-	if dbStats.WaitCount > 1000 {
+	if dbStats.WaitCount > waitCountWarn {
 		stats["message"] = "The database has a high number of wait events, indicating potential bottlenecks."
 	}
 
@@ -155,7 +159,7 @@ func (s *service) Close() error {
 // SQL Commands
 // ---------------------------------------------
 
-// SelectMe retrieves a user by their ID
+// GetUserByID retrieves a user by their ID.
 func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, error) {
 	const query = `
 		SELECT
@@ -175,23 +179,7 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, 
 		WHERE id = $1
 	`
 
-	var user models.User
-	var bio, dob, city, phone sql.NullString
-	err := s.db.QueryRowContext(ctx, query, userID).Scan(
-		&user.ID,
-		&user.Name,
-		&user.Account,
-		&user.Email,
-		&user.Password,
-		&bio,
-		&dob,
-		&city,
-		&phone,
-		&user.IsAdmin,
-		&user.CreatedAt,
-		&user.UpdatedAt,
-	)
-
+	user, err := scanUser(s.db.QueryRowContext(ctx, query, userID))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.User{}, ErrDBNotFound
@@ -199,15 +187,10 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, 
 		return models.User{}, fmt.Errorf("selecting user: %w", err)
 	}
 
-	user.Bio = StringPtr(bio)
-	user.DOB = StringPtr(dob)
-	user.City = StringPtr(city)
-	user.Phone = StringPtr(phone)
-
 	return user, nil
 }
 
-// GetUserByEmail retrieves a user by their email address
+// GetUserByEmail retrieves a user by their email address.
 func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User, error) {
 	const query = `
 		SELECT
@@ -227,23 +210,7 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User
 		WHERE email = $1
 	`
 
-	var user models.User
-	var bio, dob, city, phone sql.NullString
-	err := s.db.QueryRowContext(ctx, query, email).Scan(
-		&user.ID,
-		&user.Name,
-		&user.Account,
-		&user.Email,
-		&user.Password,
-		&bio,
-		&dob,
-		&city,
-		&phone,
-		&user.IsAdmin,
-		&user.CreatedAt,
-		&user.UpdatedAt,
-	)
-
+	user, err := scanUser(s.db.QueryRowContext(ctx, query, email))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.User{}, ErrDBNotFound
@@ -251,15 +218,10 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User
 		return models.User{}, fmt.Errorf("selecting user by email: %w", err)
 	}
 
-	user.Bio = StringPtr(bio)
-	user.DOB = StringPtr(dob)
-	user.City = StringPtr(city)
-	user.Phone = StringPtr(phone)
-
 	return user, nil
 }
 
-// GetUserByAccount retrieves a user by their account name
+// GetUserByAccount retrieves a user by their account name.
 func (s *service) GetUserByAccount(ctx context.Context, account string) (models.User, error) {
 	const query = `
 		SELECT
@@ -279,23 +241,7 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (models.
 		WHERE account = $1
 	`
 
-	var user models.User
-	var bio, dob, city, phone sql.NullString
-	err := s.db.QueryRowContext(ctx, query, account).Scan(
-		&user.ID,
-		&user.Name,
-		&user.Account,
-		&user.Email,
-		&user.Password,
-		&bio,
-		&dob,
-		&city,
-		&phone,
-		&user.IsAdmin,
-		&user.CreatedAt,
-		&user.UpdatedAt,
-	)
-
+	user, err := scanUser(s.db.QueryRowContext(ctx, query, account))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.User{}, ErrDBNotFound
@@ -303,45 +249,24 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (models.
 		return models.User{}, fmt.Errorf("selecting user by account: %w", err)
 	}
 
-	user.Bio = StringPtr(bio)
-	user.DOB = StringPtr(dob)
-	user.City = StringPtr(city)
-	user.Phone = StringPtr(phone)
-
 	return user, nil
 }
 
-// CreateUser inserts a new user into the database
-func (s *service) CreateUser(ctx context.Context, nu models.NewUser) (models.User, error) {
+// CreateUser inserts a new user into the database.
+func (s *service) CreateUser(ctx context.Context, newUser models.NewUser) (models.User, error) {
 	const query = `
 		INSERT INTO auth.users (name, account, email, password, is_admin)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id::text, name, account, email, password, bio, dob, city, phone, is_admin, created_at, updated_at
 	`
 
-	var user models.User
-	var bio, dob, city, phone sql.NullString
-
-	err := s.db.QueryRowContext(ctx, query,
-		nu.Name,
-		nu.Account,
-		nu.Email,
-		nu.Password,
+	user, err := scanUser(s.db.QueryRowContext(ctx, query,
+		newUser.Name,
+		newUser.Account,
+		newUser.Email,
+		newUser.Password,
 		false, // is_admin defaults to false
-	).Scan(
-		&user.ID,
-		&user.Name,
-		&user.Account,
-		&user.Email,
-		&user.Password,
-		&bio,
-		&dob,
-		&city,
-		&phone,
-		&user.IsAdmin,
-		&user.CreatedAt,
-		&user.UpdatedAt,
-	)
+	))
 
 	if err != nil {
 		if isPgError(err, uniqueViolation) {
@@ -351,15 +276,10 @@ func (s *service) CreateUser(ctx context.Context, nu models.NewUser) (models.Use
 		return models.User{}, fmt.Errorf("creating user: %w", err)
 	}
 
-	user.Bio = StringPtr(bio)
-	user.DOB = StringPtr(dob)
-	user.City = StringPtr(city)
-	user.Phone = StringPtr(phone)
-
 	return user, nil
 }
 
-// ListUsers retrieves all users from the database
+// ListUsers retrieves all users from the database.
 func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 	const query = `
 		SELECT
@@ -387,29 +307,10 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 
 	var users []models.User
 	for rows.Next() {
-		var user models.User
-		var bio, dob, city, phone sql.NullString
-		err := rows.Scan(
-			&user.ID,
-			&user.Name,
-			&user.Account,
-			&user.Email,
-			&user.Password,
-			&bio,
-			&dob,
-			&city,
-			&phone,
-			&user.IsAdmin,
-			&user.CreatedAt,
-			&user.UpdatedAt,
-		)
+		user, err := scanUser(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scanning user: %w", err)
 		}
-		user.Bio = StringPtr(bio)
-		user.DOB = StringPtr(dob)
-		user.City = StringPtr(city)
-		user.Phone = StringPtr(phone)
 		users = append(users, user)
 	}
 
@@ -424,28 +325,19 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 // Refresh Token Operations
 // ---------------------------------------------
 
-// CreateRefreshToken inserts a new refresh token into the database
-func (s *service) CreateRefreshToken(ctx context.Context, nrt models.NewRefreshToken) (models.RefreshToken, error) {
+// CreateRefreshToken inserts a new refresh token into the database.
+func (s *service) CreateRefreshToken(ctx context.Context, newRefreshToken models.NewRefreshToken) (models.RefreshToken, error) {
 	const query = `
 		INSERT INTO auth.refresh_tokens (user_id, token, expires_at)
 		VALUES ($1, $2, $3)
 		RETURNING id::text, user_id::text, token, expires_at, revoked_at, created_at, updated_at
 	`
 
-	var rt models.RefreshToken
-	err := s.db.QueryRowContext(ctx, query,
-		nrt.UserID,
-		nrt.Token,
-		nrt.ExpiresAt,
-	).Scan(
-		&rt.ID,
-		&rt.UserID,
-		&rt.Token,
-		&rt.ExpiresAt,
-		&rt.RevokedAt,
-		&rt.CreatedAt,
-		&rt.UpdatedAt,
-	)
+	refreshToken, err := scanRefreshToken(s.db.QueryRowContext(ctx, query,
+		newRefreshToken.UserID,
+		newRefreshToken.Token,
+		newRefreshToken.ExpiresAt,
+	))
 
 	if err != nil {
 		if isPgError(err, foreignKeyViolation) {
@@ -454,10 +346,10 @@ func (s *service) CreateRefreshToken(ctx context.Context, nrt models.NewRefreshT
 		return models.RefreshToken{}, fmt.Errorf("creating refresh token: %w", err)
 	}
 
-	return rt, nil
+	return refreshToken, nil
 }
 
-// GetRefreshTokenByToken retrieves a refresh token by its token value
+// GetRefreshTokenByToken retrieves a refresh token by its token value.
 func (s *service) GetRefreshTokenByToken(ctx context.Context, token []byte) (models.RefreshToken, error) {
 	const query = `
 		SELECT
@@ -472,16 +364,7 @@ func (s *service) GetRefreshTokenByToken(ctx context.Context, token []byte) (mod
 		WHERE token = $1
 	`
 
-	var rt models.RefreshToken
-	err := s.db.QueryRowContext(ctx, query, token).Scan(
-		&rt.ID,
-		&rt.UserID,
-		&rt.Token,
-		&rt.ExpiresAt,
-		&rt.RevokedAt,
-		&rt.CreatedAt,
-		&rt.UpdatedAt,
-	)
+	refreshToken, err := scanRefreshToken(s.db.QueryRowContext(ctx, query, token))
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -490,10 +373,10 @@ func (s *service) GetRefreshTokenByToken(ctx context.Context, token []byte) (mod
 		return models.RefreshToken{}, fmt.Errorf("getting refresh token: %w", err)
 	}
 
-	return rt, nil
+	return refreshToken, nil
 }
 
-// RevokeRefreshToken marks a refresh token as revoked
+// RevokeRefreshToken marks a refresh token as revoked.
 func (s *service) RevokeRefreshToken(ctx context.Context, tokenID string) error {
 	const query = `
 		UPDATE auth.refresh_tokens
@@ -519,7 +402,7 @@ func (s *service) RevokeRefreshToken(ctx context.Context, tokenID string) error 
 	return nil
 }
 
-// DeleteExpiredRefreshTokens removes all expired refresh tokens from the database
+// DeleteExpiredRefreshTokens removes all expired refresh tokens from the database.
 func (s *service) DeleteExpiredRefreshTokens(ctx context.Context) error {
 	const query = `
 		DELETE FROM auth.refresh_tokens
@@ -534,7 +417,7 @@ func (s *service) DeleteExpiredRefreshTokens(ctx context.Context) error {
 	return nil
 }
 
-// DeleteRefreshTokensByUserID removes all refresh tokens for a specific user
+// DeleteRefreshTokensByUserID removes all refresh tokens for a specific user.
 func (s *service) DeleteRefreshTokensByUserID(ctx context.Context, userID string) error {
 	const query = `
 		DELETE FROM auth.refresh_tokens
@@ -553,7 +436,56 @@ func (s *service) DeleteRefreshTokensByUserID(ctx context.Context, userID string
 // Helpers
 // ---------------------------------------------
 
-// isPgError checks if the error is a PostgreSQL error with the given code
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanUser(scanner rowScanner) (models.User, error) {
+	var user models.User
+	var bio, dob, city, phone sql.NullString
+	if err := scanner.Scan(
+		&user.ID,
+		&user.Name,
+		&user.Account,
+		&user.Email,
+		&user.Password,
+		&bio,
+		&dob,
+		&city,
+		&phone,
+		&user.IsAdmin,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	); err != nil {
+		return models.User{}, err
+	}
+
+	user.Bio = StringPtr(bio)
+	user.DOB = StringPtr(dob)
+	user.City = StringPtr(city)
+	user.Phone = StringPtr(phone)
+
+	return user, nil
+}
+
+func scanRefreshToken(scanner rowScanner) (models.RefreshToken, error) {
+	var refreshToken models.RefreshToken
+	if err := scanner.Scan(
+		&refreshToken.ID,
+		&refreshToken.UserID,
+		&refreshToken.Token,
+		&refreshToken.ExpiresAt,
+		&refreshToken.RevokedAt,
+		&refreshToken.CreatedAt,
+		&refreshToken.UpdatedAt,
+	); err != nil {
+		return models.RefreshToken{}, err
+	}
+
+	return refreshToken, nil
+}
+
+// isPgError checks if the error is a PostgreSQL error with the given code.
 func isPgError(err error, code string) bool {
 	var pgErr interface{ SQLState() string }
 	if errors.As(err, &pgErr) {

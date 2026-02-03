@@ -14,7 +14,8 @@ const (
 	IsAdminKey = "is_admin"
 )
 
-func Authen(jwtService *jwt.TokenService) gin.HandlerFunc {
+// Authenticate validates the Authorization header and attaches user context.
+func Authenticate(jwtService *jwt.TokenService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -23,6 +24,7 @@ func Authen(jwtService *jwt.TokenService) gin.HandlerFunc {
 			return
 		}
 
+		// Expect "Bearer <token>" format.
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") || parts[1] == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_authorization_header"})
