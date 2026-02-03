@@ -12,6 +12,14 @@ type App struct {
 	jwt    *jwt.TokenService
 }
 
-func NewApp(db sqldb.Service, sentry *sentry.SentryService, jwt *jwt.TokenService) *App {
-	return &App{db: db, sentry: sentry, jwt: jwt}
+func NewApp(
+	db sqldb.Service,
+	sentry *sentry.SentryService,
+	jwt *jwt.TokenService,
+) *App {
+	return &App{
+		db:     db,
+		sentry: sentry,
+		jwt:    jwt,
+	}
 }
