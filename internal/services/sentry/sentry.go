@@ -1,3 +1,4 @@
+// Package sentry provides error tracking and monitoring using Sentry.
 package sentry
 
 import (
@@ -7,7 +8,6 @@ import (
 	"github.com/getsentry/sentry-go"
 )
 
-// Package sentry provides error tracking and monitoring using Sentry.
 //
 // Sentry helps you monitor and fix crashes in real time.
 // When something goes wrong in production, Sentry captures the error
