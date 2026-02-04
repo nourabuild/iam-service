@@ -26,11 +26,11 @@ import (
 // These are our custom errors. Using package-level errors like this makes it
 // easy to check what went wrong: errors.Is(err, jwt.ErrExpiredToken)
 var (
-	ErrInvalidToken     = errors.New("jwt: invalid token")
-	ErrExpiredToken     = errors.New("jwt: token has expired")
-	ErrTokenNotFound    = errors.New("jwt: token not found")
-	ErrInvalidClaims    = errors.New("jwt: invalid claims")
-	ErrTokenNotYetValid = errors.New("jwt: token not yet valid")
+	ErrInvalidToken     = errors.New("invalid_token")
+	ErrExpiredToken     = errors.New("expired_token")
+	ErrTokenNotFound    = errors.New("token_not_found")
+	ErrInvalidClaims    = errors.New("invalid_claims")
+	ErrTokenNotYetValid = errors.New("token_not_yet_valid")
 )
 
 // =============================================================================
@@ -270,16 +270,16 @@ func (s *TokenService) parseToken(tokenString string, secret []byte) (*CustomCla
 func convertError(err error) error {
 	switch {
 	case errors.Is(err, jwt.ErrTokenExpired):
-		return fmt.Errorf("%w: %v", ErrExpiredToken, err)
+		return ErrExpiredToken
 	case errors.Is(err, jwt.ErrTokenNotValidYet):
-		return fmt.Errorf("%w: %v", ErrTokenNotYetValid, err)
+		return ErrTokenNotYetValid
 	case errors.Is(err, jwt.ErrTokenMalformed):
-		return fmt.Errorf("%w: token is malformed", ErrInvalidToken)
+		return ErrInvalidToken
 	case errors.Is(err, jwt.ErrTokenSignatureInvalid):
-		return fmt.Errorf("%w: signature is invalid", ErrInvalidToken)
+		return ErrInvalidToken
 	case errors.Is(err, jwt.ErrTokenInvalidClaims):
-		return fmt.Errorf("%w: %v", ErrInvalidClaims, err)
+		return ErrInvalidClaims
 	default:
-		return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		return ErrInvalidToken
 	}
 }

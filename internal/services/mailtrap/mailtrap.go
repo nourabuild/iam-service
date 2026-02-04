@@ -17,7 +17,8 @@ type Service interface {
 	SendPasswordResetEmail(to, resetToken string) error
 }
 
-type service struct {
+// MailtrapService is the concrete implementation of the email service
+type MailtrapService struct {
 	apiKey     string
 	apiURL     string
 	fromEmail  string
@@ -41,9 +42,9 @@ type EmailAddress struct {
 	Name  string `json:"name,omitempty"`
 }
 
-// New creates a new email service instance
-func NewMailtrapService() Service {
-	return &service{
+// NewMailtrapService creates a new email service instance
+func NewMailtrapService() *MailtrapService {
+	return &MailtrapService{
 		apiKey:    os.Getenv("MAILTRAP_API_KEY"),
 		apiURL:    os.Getenv("MAILTRAP_API_URL"),
 		fromEmail: getEnvOrDefault("EMAIL_FROM", "noreply@example.com"),
@@ -55,7 +56,7 @@ func NewMailtrapService() Service {
 }
 
 // SendPasswordResetEmail sends a password reset email with the reset token
-func (s *service) SendPasswordResetEmail(to, resetToken string) error {
+func (s *MailtrapService) SendPasswordResetEmail(to, resetToken string) error {
 	// Construct reset URL (in production, this would be your frontend URL)
 	resetURL := fmt.Sprintf("%s/reset-password?token=%s",
 		getEnvOrDefault("FRONTEND_URL", "http://localhost:3000"),
@@ -122,7 +123,7 @@ IAM Service Team`, resetURL)
 }
 
 // sendEmail sends an email using the Mailtrap API
-func (s *service) sendEmail(req MailtrapRequest) error {
+func (s *MailtrapService) sendEmail(req MailtrapRequest) error {
 	jsonData, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshaling email request: %w", err)

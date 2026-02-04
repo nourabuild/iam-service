@@ -22,7 +22,7 @@ const (
 	minAccountLength  = 6
 	bcryptCost        = bcrypt.DefaultCost
 
-	maxRegisterFormMemory int64 = 10 << 20         // 10 MB
+	maxRegisterFormMemory int64 = 10 << 20 // 10 MB
 	registerRefreshTTL          = 7 * 24 * time.Hour
 	authRefreshTTL              = 30 * 24 * time.Hour
 
@@ -63,7 +63,7 @@ func parseMultipartOrForm(r *http.Request, maxMemory int64) error {
 func (a *App) HandleRegister(c *gin.Context) {
 	if err := parseMultipartOrForm(c.Request, maxRegisterFormMemory); err != nil {
 		a.toSentry(c, "register", "parse_form", sentry.LevelError, err)
-		writeError(c, ErrUnmarshal, nil)
+		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
 	}
 
@@ -81,14 +81,14 @@ func (a *App) HandleRegister(c *gin.Context) {
 
 	errCode, validationErrors := validateRegisterInput(req)
 	if errCode != "" {
-		writeError(c, errCode, validationErrors)
+		writeError(c, http.StatusBadRequest, errCode, validationErrors)
 		return
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword(req.Password, bcryptCost)
 	if err != nil {
 		a.toSentry(c, "register", "bcrypt", sentry.LevelError, err)
-		writeError(c, ErrHashPassword, nil)
+		writeError(c, http.StatusInternalServerError, "internal_hash_error", nil)
 		return
 	}
 
@@ -103,24 +103,24 @@ func (a *App) HandleRegister(c *gin.Context) {
 	createdUser, err := a.db.CreateUser(c.Request.Context(), newUser)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
-			writeError(c, ErrUserExists, nil)
+			writeError(c, http.StatusConflict, "user_already_exists", nil)
 			return
 		}
 		a.toSentry(c, "register", "db", sentry.LevelError, err)
-		writeError(c, ErrCreateUser, nil)
+		writeError(c, http.StatusInternalServerError, "internal_create_user_error", nil)
 		return
 	}
 
 	accessToken, refreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), createdUser.ID, createdUser.IsAdmin)
 	if err != nil {
 		a.toSentry(c, "register", "jwt", sentry.LevelError, err)
-		writeError(c, ErrGenerateTokens, nil)
+		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
 	if err := a.storeRefreshToken(c.Request.Context(), createdUser.ID, refreshToken, registerRefreshTTL); err != nil {
 		a.toSentry(c, "register", "db_token", sentry.LevelError, err)
-		writeError(c, ErrGenerateTokens, nil)
+		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
@@ -131,43 +131,43 @@ func (a *App) HandleLogin(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		a.toSentry(c, "login", "unmarshal", sentry.LevelError, err)
-		writeError(c, ErrUnmarshal, nil)
+		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
 	}
 
 	req.Account = strings.TrimSpace(req.Account)
 
 	if validationErrors := validateLoginInput(req); len(validationErrors) > 0 {
-		writeError(c, ErrMissingFields, validationErrors)
+		writeError(c, http.StatusBadRequest, "missing_required_fields", validationErrors)
 		return
 	}
 
 	user, err := a.db.GetUserByAccount(c.Request.Context(), req.Account)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
-			writeError(c, ErrInvalidCredentials, nil)
+			writeError(c, http.StatusUnauthorized, "invalid_credentials", nil)
 			return
 		}
 		a.toSentry(c, "login", "db", sentry.LevelError, err)
-		writeError(c, ErrProcessLogin, nil)
+		writeError(c, http.StatusInternalServerError, "internal_login_error", nil)
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword(user.Password, []byte(req.Password)); err != nil {
-		writeError(c, ErrInvalidCredentials, nil)
+		writeError(c, http.StatusUnauthorized, "invalid_credentials", nil)
 		return
 	}
 
 	accessToken, refreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), user.ID, user.IsAdmin)
 	if err != nil {
 		a.toSentry(c, "login", "jwt", sentry.LevelError, err)
-		writeError(c, ErrGenerateTokens, nil)
+		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
 	if err := a.storeRefreshToken(c.Request.Context(), user.ID, refreshToken, authRefreshTTL); err != nil {
 		a.toSentry(c, "login", "db_token", sentry.LevelError, err)
-		writeError(c, ErrGenerateTokens, nil)
+		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
@@ -178,14 +178,14 @@ func (a *App) HandleRefresh(c *gin.Context) {
 	var req RefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		a.toSentry(c, "refresh", "unmarshal", sentry.LevelError, err)
-		writeError(c, ErrUnmarshal, nil)
+		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
 	}
 
 	req.RefreshToken = strings.TrimSpace(req.RefreshToken)
 
 	if validationErrors := validateRefreshInput(req); len(validationErrors) > 0 {
-		writeError(c, ErrMissingFields, validationErrors)
+		writeError(c, http.StatusBadRequest, "missing_required_fields", validationErrors)
 		return
 	}
 
@@ -197,41 +197,41 @@ func (a *App) HandleRefresh(c *gin.Context) {
 		var errCode string
 		switch {
 		case errors.Is(err, jwt.ErrExpiredToken):
-			errCode = ErrExpiredToken
+			errCode = "expired_token"
 		case errors.Is(err, jwt.ErrInvalidToken):
-			errCode = ErrInvalidToken
+			errCode = "invalid_token"
 		default:
-			errCode = ErrUnauthorized
+			errCode = "unauthorized"
 		}
-		writeError(c, errCode, nil)
+		writeError(c, http.StatusUnauthorized, errCode, nil)
 		return
 	}
 
 	storedToken, err := a.db.GetRefreshTokenByToken(c.Request.Context(), []byte(req.RefreshToken))
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
-			writeError(c, ErrInvalidToken, nil)
+			writeError(c, http.StatusUnauthorized, "invalid_token", nil)
 			return
 		}
 		a.toSentry(c, "refresh", "db", sentry.LevelError, err)
-		writeError(c, ErrUnauthorized, nil)
+		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
 	}
 
 	if storedToken.RevokedAt != nil {
-		writeError(c, ErrInvalidToken, nil)
+		writeError(c, http.StatusUnauthorized, "invalid_token", nil)
 		return
 	}
 
 	if time.Now().UTC().After(storedToken.ExpiresAt) {
-		writeError(c, ErrExpiredToken, nil)
+		writeError(c, http.StatusUnauthorized, "expired_token", nil)
 		return
 	}
 
 	accessToken, newRefreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), claims.Subject, claims.IsAdmin)
 	if err != nil {
 		a.toSentry(c, "refresh", "jwt_generate", sentry.LevelError, err)
-		writeError(c, ErrGenerateTokens, nil)
+		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
@@ -241,7 +241,7 @@ func (a *App) HandleRefresh(c *gin.Context) {
 
 	if err := a.storeRefreshToken(c.Request.Context(), claims.Subject, newRefreshToken, authRefreshTTL); err != nil {
 		a.toSentry(c, "refresh", "db_token", sentry.LevelError, err)
-		writeError(c, ErrGenerateTokens, nil)
+		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
@@ -265,7 +265,7 @@ func validateRegisterInput(req models.NewUser) (string, map[string]string) {
 	}
 
 	if len(validationErrors) > 0 {
-		return ErrMissingFields, validationErrors
+		return "missing_required_fields", validationErrors
 	}
 
 	if _, err := mail.ParseAddress(req.Email); err != nil {
@@ -348,19 +348,19 @@ func passwordComplexityFlags(password []byte) passwordComplexity {
 }
 
 func primaryRegisterError(details map[string]string, password []byte, complexity passwordComplexity) string {
-	errCode := ErrInvalidEmail
+	errCode := "invalid_email"
 	if _, hasAccountErr := details["account"]; hasAccountErr {
-		errCode = ErrAccountTooShort
+		errCode = "account_too_short"
 	}
 	if _, hasPasswordErr := details["password"]; hasPasswordErr {
 		if len(password) < minPasswordLength {
-			errCode = ErrPasswordTooShort
+			errCode = "password_too_short"
 		} else if !complexity.hasUpper {
-			errCode = ErrPasswordNoUppercase
+			errCode = "password_must_contain_uppercase"
 		} else if !complexity.hasNumber {
-			errCode = ErrPasswordNoNumber
+			errCode = "password_must_contain_number"
 		} else if !complexity.hasSpecial {
-			errCode = ErrPasswordNoSpecialChar
+			errCode = "password_must_contain_special_character"
 		}
 	}
 
@@ -387,7 +387,7 @@ type ResetPasswordRequest struct {
 func (a *App) HandleForgotPassword(c *gin.Context) {
 	var req ForgotPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, ErrUnmarshal, nil)
+		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
 	}
 
@@ -403,7 +403,7 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 			return
 		}
 		a.toSentry(c, "forgot_password", "db", sentry.LevelError, err)
-		writeError(c, ErrCreateResetToken, nil)
+		writeError(c, http.StatusInternalServerError, "internal_create_reset_token_error", nil)
 		return
 	}
 
@@ -411,7 +411,7 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 	token, err := generateSecureToken(resetTokenLength)
 	if err != nil {
 		a.toSentry(c, "forgot_password", "token_generation", sentry.LevelError, err)
-		writeError(c, ErrCreateResetToken, nil)
+		writeError(c, http.StatusInternalServerError, "internal_create_reset_token_error", nil)
 		return
 	}
 
@@ -423,15 +423,15 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 	})
 	if err != nil {
 		a.toSentry(c, "forgot_password", "db", sentry.LevelError, err)
-		writeError(c, ErrCreateResetToken, nil)
+		writeError(c, http.StatusInternalServerError, "internal_create_reset_token_error", nil)
 		return
 	}
 
 	// Send password reset email
-	err = a.email.SendPasswordResetEmail(user.Email, token)
+	err = a.mailtrap.SendPasswordResetEmail(user.Email, token)
 	if err != nil {
 		a.toSentry(c, "forgot_password", "email", sentry.LevelError, err)
-		writeError(c, ErrSendResetEmail, nil)
+		writeError(c, http.StatusInternalServerError, "internal_send_reset_email_error", nil)
 		return
 	}
 
@@ -444,13 +444,13 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 func (a *App) HandleResetPassword(c *gin.Context) {
 	var req ResetPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, ErrUnmarshal, nil)
+		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
 	}
 
 	// Validate passwords match
 	if req.Password != req.PasswordConfirm {
-		writeError(c, ErrPasswordMismatch, map[string]string{
+		writeError(c, http.StatusUnauthorized, "password_mismatch", map[string]string{
 			"field": "password_confirm",
 		})
 		return
@@ -458,7 +458,7 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 
 	// Validate password complexity
 	if err := validatePassword(req.Password); err != nil {
-		writeError(c, err.Error(), nil)
+		writeError(c, http.StatusBadRequest, err.Error(), nil)
 		return
 	}
 
@@ -466,11 +466,11 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 	resetToken, err := a.db.GetPasswordResetToken(c.Request.Context(), req.Token)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
-			writeError(c, ErrInvalidResetToken, nil)
+			writeError(c, http.StatusBadRequest, "invalid_or_expired_reset_token", nil)
 			return
 		}
 		a.toSentry(c, "reset_password", "db", sentry.LevelError, err)
-		writeError(c, ErrResetPassword, nil)
+		writeError(c, http.StatusInternalServerError, "internal_reset_password_error", nil)
 		return
 	}
 
@@ -478,7 +478,7 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcryptCost)
 	if err != nil {
 		a.toSentry(c, "reset_password", "bcrypt", sentry.LevelError, err)
-		writeError(c, ErrHashPassword, nil)
+		writeError(c, http.StatusInternalServerError, "internal_hash_error", nil)
 		return
 	}
 
@@ -486,7 +486,7 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 	err = a.db.UpdateUserPassword(c.Request.Context(), resetToken.UserID, hashedPassword)
 	if err != nil {
 		a.toSentry(c, "reset_password", "db", sentry.LevelError, err)
-		writeError(c, ErrResetPassword, nil)
+		writeError(c, http.StatusInternalServerError, "internal_reset_password_error", nil)
 		return
 	}
 
@@ -521,18 +521,18 @@ func generateSecureToken(length int) (string, error) {
 // validatePassword validates password complexity requirements
 func validatePassword(password string) error {
 	if len(password) < minPasswordLength {
-		return errors.New(ErrPasswordTooShort)
+		return errors.New("password_too_short")
 	}
 
 	complexity := passwordComplexityFlags([]byte(password))
 	if !complexity.hasUpper {
-		return errors.New(ErrPasswordNoUppercase)
+		return errors.New("password_must_contain_uppercase")
 	}
 	if !complexity.hasNumber {
-		return errors.New(ErrPasswordNoNumber)
+		return errors.New("password_must_contain_number")
 	}
 	if !complexity.hasSpecial {
-		return errors.New(ErrPasswordNoSpecialChar)
+		return errors.New("password_must_contain_special_character")
 	}
 
 	return nil

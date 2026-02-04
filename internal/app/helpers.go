@@ -9,21 +9,21 @@ import (
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 )
 
-type ErrorResponse struct {
-	Error   string            `json:"error"`
-	Details map[string]string `json:"details,omitempty"`
-}
-
-func writeError(c *gin.Context, errCode string, details map[string]string) {
-	response := ErrorResponse{Error: errCode}
-	if len(details) > 0 {
-		response.Details = details
+func writeError(c *gin.Context, status int, errCode string, details map[string]string) {
+	response := gin.H{
+		"error": errCode,
 	}
-	c.JSON(statusForError(errCode), response)
+
+	if len(details) > 0 {
+		response["details"] = details
+	}
+
+	c.JSON(status, response)
 }
 
+// =============================================================================
 func (a *App) storeRefreshToken(ctx context.Context, userID, refreshToken string, ttl time.Duration) error {
-	expiresAt := time.Now().Add(ttl)
+	expiresAt := time.Now().UTC().Add(ttl)
 	_, err := a.db.CreateRefreshToken(ctx, models.NewRefreshToken{
 		UserID:    userID,
 		Token:     []byte(refreshToken),
@@ -32,6 +32,7 @@ func (a *App) storeRefreshToken(ctx context.Context, userID, refreshToken string
 	return err
 }
 
+// =============================================================================
 func (a *App) toSentry(c *gin.Context, handler, errType string, level sentry.Level, err error) {
 	a.sentry.WithScope(func(scope *sentry.Scope) {
 		scope.SetTag("handler", handler)

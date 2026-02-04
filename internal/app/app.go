@@ -8,22 +8,22 @@ import (
 )
 
 type App struct {
-	db     sqldb.Service
-	sentry *sentry.SentryService
-	jwt    *jwt.TokenService
-	email  mailtrap.Service
+	db       sqldb.Service
+	sentry   *sentry.SentryService
+	jwt      *jwt.TokenService
+	mailtrap *mailtrap.MailtrapService
 }
 
 func NewApp(
 	db sqldb.Service,
 	sentry *sentry.SentryService,
 	jwt *jwt.TokenService,
-	email mailtrap.Service,
+	mailtrap *mailtrap.MailtrapService,
 ) *App {
 	return &App{
-		db:     db,
-		sentry: sentry,
-		jwt:    jwt,
-		email:  email,
+		db:       db,
+		sentry:   sentry,
+		jwt:      jwt,
+		mailtrap: mailtrap,
 	}
 }

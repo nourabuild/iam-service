@@ -14,7 +14,7 @@ import (
 func (a *App) HandleMe(c *gin.Context) {
 	userID, err := middleware.GetUserID(c)
 	if err != nil {
-		writeError(c, ErrUnauthorized, nil)
+		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
 	}
 
@@ -22,10 +22,10 @@ func (a *App) HandleMe(c *gin.Context) {
 	if err != nil {
 		a.toSentry(c, "whoami", "db", sentry.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
-			writeError(c, ErrUserNotFound, nil)
+			writeError(c, http.StatusUnauthorized, "user_not_found", nil)
 			return
 		}
-		writeError(c, ErrVerifyUser, nil)
+		writeError(c, http.StatusInternalServerError, "internal_verify_user_error", nil)
 		return
 	}
 
@@ -36,7 +36,7 @@ func (a *App) HandleListUsers(c *gin.Context) {
 	users, err := a.db.ListUsers(c.Request.Context())
 	if err != nil {
 		a.toSentry(c, "list_users", "db", sentry.LevelError, err)
-		writeError(c, ErrRetrieveUsers, nil)
+		writeError(c, http.StatusInternalServerError, "internal_retrieve_users_error", nil)
 		return
 	}
 
@@ -46,7 +46,7 @@ func (a *App) HandleListUsers(c *gin.Context) {
 func (a *App) HandleGrantAdminRole(c *gin.Context) {
 	userID := c.Param("user_id")
 	if userID == "" {
-		writeError(c, ErrInvalidUserID, nil)
+		writeError(c, http.StatusBadRequest, "invalid_user_id", nil)
 		return
 	}
 
@@ -54,10 +54,10 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 	if err != nil {
 		a.toSentry(c, "promote_user", "db", sentry.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
-			writeError(c, ErrUserNotFound, nil)
+			writeError(c, http.StatusUnauthorized, "user_not_found", nil)
 			return
 		}
-		writeError(c, ErrPromoteUser, nil)
+		writeError(c, http.StatusInternalServerError, "internal_promote_user_error", nil)
 		return
 	}
 
@@ -76,19 +76,19 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	// Get authenticated user ID
 	userID, err := middleware.GetUserID(c)
 	if err != nil {
-		writeError(c, ErrUnauthorized, nil)
+		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
 	}
 
 	var req ChangePasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, ErrUnmarshal, nil)
+		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
 	}
 
 	// Validate new passwords match
 	if req.NewPassword != req.PasswordConfirm {
-		writeError(c, ErrPasswordMismatch, map[string]string{
+		writeError(c, http.StatusUnauthorized, "password_mismatch", map[string]string{
 			"field": "password_confirm",
 		})
 		return
@@ -96,7 +96,7 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 
 	// Validate password complexity
 	if err := validatePassword(req.NewPassword); err != nil {
-		writeError(c, err.Error(), nil)
+		writeError(c, http.StatusBadRequest, err.Error(), nil)
 		return
 	}
 
@@ -105,17 +105,17 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	if err != nil {
 		a.toSentry(c, "change_password", "db", sentry.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
-			writeError(c, ErrUserNotFound, nil)
+			writeError(c, http.StatusUnauthorized, "user_not_found", nil)
 			return
 		}
-		writeError(c, ErrUpdatePassword, nil)
+		writeError(c, http.StatusInternalServerError, "internal_update_password_error", nil)
 		return
 	}
 
 	// Verify current password
 	err = bcrypt.CompareHashAndPassword(user.Password, []byte(req.CurrentPassword))
 	if err != nil {
-		writeError(c, ErrPasswordMismatch, map[string]string{
+		writeError(c, http.StatusUnauthorized, "password_mismatch", map[string]string{
 			"field": "current_password",
 		})
 		return
@@ -125,7 +125,7 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcryptCost)
 	if err != nil {
 		a.toSentry(c, "change_password", "bcrypt", sentry.LevelError, err)
-		writeError(c, ErrHashPassword, nil)
+		writeError(c, http.StatusInternalServerError, "internal_hash_error", nil)
 		return
 	}
 
@@ -133,7 +133,7 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	err = a.db.UpdateUserPassword(c.Request.Context(), userID, hashedPassword)
 	if err != nil {
 		a.toSentry(c, "change_password", "db", sentry.LevelError, err)
-		writeError(c, ErrUpdatePassword, nil)
+		writeError(c, http.StatusInternalServerError, "internal_update_password_error", nil)
 		return
 	}
 
