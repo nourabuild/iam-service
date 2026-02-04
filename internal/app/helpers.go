@@ -9,28 +9,17 @@ import (
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 )
 
+type ErrorResponse struct {
+	Error   string            `json:"error"`
+	Details map[string]string `json:"details,omitempty"`
+}
+
 func writeError(c *gin.Context, errCode string, details map[string]string) {
 	response := ErrorResponse{Error: errCode}
 	if len(details) > 0 {
 		response.Details = details
 	}
 	c.JSON(statusForError(errCode), response)
-}
-
-func userToResponse(user models.User) UserResponse {
-	return UserResponse{
-		ID:        user.ID,
-		Name:      user.Name,
-		Account:   user.Account,
-		Email:     user.Email,
-		Bio:       user.Bio,
-		DOB:       user.DOB,
-		City:      user.City,
-		Phone:     user.Phone,
-		IsAdmin:   user.IsAdmin,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-	}
 }
 
 func (a *App) storeRefreshToken(ctx context.Context, userID, refreshToken string, ttl time.Duration) error {

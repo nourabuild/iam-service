@@ -28,7 +28,7 @@ func (a *App) HandleWhoAmI(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, userToResponse(user))
+	c.JSON(http.StatusOK, user)
 }
 
 func (a *App) HandleListUsers(c *gin.Context) {
@@ -39,10 +39,5 @@ func (a *App) HandleListUsers(c *gin.Context) {
 		return
 	}
 
-	response := make([]UserResponse, 0, len(users))
-	for _, user := range users {
-		response = append(response, userToResponse(user))
-	}
-
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, users)
 }

@@ -10,6 +10,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type LivenessResponse struct {
+	Status     string `json:"status"`
+	Host       string `json:"host"`
+	GOMAXPROCS int    `json:"gomaxprocs"`
+}
+
 func (a *App) HandleReadiness(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
