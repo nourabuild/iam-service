@@ -43,7 +43,7 @@ func (a *App) RegisterRoutes() *gin.Engine {
 		user.Use(middleware.Authenticate(a.jwt))
 		{
 			user.GET("/me", a.HandleMe)
-			user.POST("/password/change", a.HandlePasswordChange) // Change password with current password (authenticated).
+			user.POST("/me/password/change", a.HandlePasswordChange) // Change password with current password (authenticated).
 		}
 
 		// Admin routes (protected - requires admin role)
