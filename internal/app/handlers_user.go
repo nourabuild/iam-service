@@ -42,7 +42,7 @@ func (a *App) HandleListUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, users)
 }
 
-func (a *App) HandlePromoteUser(c *gin.Context) {
+func (a *App) HandleGrantAdminRole(c *gin.Context) {
 	userID := c.Param("user_id")
 	if userID == "" {
 		writeError(c, ErrInvalidUserID, nil)
