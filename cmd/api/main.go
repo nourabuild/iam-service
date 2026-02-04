@@ -16,6 +16,7 @@ import (
 	"github.com/nourabuild/iam-service/internal/app"
 	"github.com/nourabuild/iam-service/internal/sdk/jwt"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
+	"github.com/nourabuild/iam-service/internal/services/mailtrap"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 )
 
@@ -39,23 +40,31 @@ func run(logger *slog.Logger) error {
 	// 2. Resource Management with WaitGroups
 	var wg sync.WaitGroup
 
-	// 3. Initialize Sentry for error tracking
+	// 3. Initialize Database service
+	sqlService := sqldb.New()
+	defer sqlService.Close()
+
+	// 4. Initialize Sentry for error tracking
 	sentryService := sentry.NewSentryService()
 	defer sentryService.Close()
 
-	// 4. Initialize JWT service
+	// 5. Initialize JWT service
 	jwtService := jwt.NewTokenService()
 
-	// 5. App Initialization
+	// 6. Initialize Mailtrap service
+	emailService := mailtrap.NewMailtrapService()
+
+	// 7. App Initialization
 	iamApp := app.NewApp(
-		sqldb.New(),
+		sqlService,
 		sentryService,
 		jwtService,
+		emailService,
 	)
 
-	// 6. Setup Gin router
+	// 8. Setup Gin router
 
-	// 7. Modern Server with configured timeouts
+	// 9. Modern Server with configured timeouts
 	srv := &http.Server{
 		Addr:         ":" + getEnv("PORT", "8080"),
 		Handler:      iamApp.RegisterRoutes(),

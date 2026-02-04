@@ -60,6 +60,15 @@ type Service interface {
 	RevokeRefreshToken(ctx context.Context, tokenID string) error
 	DeleteExpiredRefreshTokens(ctx context.Context) error
 	DeleteRefreshTokensByUserID(ctx context.Context, userID string) error
+
+	// Password reset token operations
+	CreatePasswordResetToken(ctx context.Context, token models.NewPasswordResetToken) (models.PasswordResetToken, error)
+	GetPasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error)
+	MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID string) error
+	DeleteExpiredPasswordResetTokens(ctx context.Context) error
+
+	// Password operations
+	UpdateUserPassword(ctx context.Context, userID string, newPassword []byte) error
 }
 
 type service struct {
@@ -449,6 +458,148 @@ func (s *service) DeleteRefreshTokensByUserID(ctx context.Context, userID string
 	_, err := s.db.ExecContext(ctx, query, userID)
 	if err != nil {
 		return fmt.Errorf("deleting refresh tokens for user: %w", err)
+	}
+
+	return nil
+}
+
+// ---------------------------------------------
+// Password Reset Token Operations
+// ---------------------------------------------
+
+// CreatePasswordResetToken inserts a new password reset token into the database.
+func (s *service) CreatePasswordResetToken(ctx context.Context, newToken models.NewPasswordResetToken) (models.PasswordResetToken, error) {
+	const query = `
+		INSERT INTO auth.password_reset_tokens (user_id, token, expires_at)
+		VALUES ($1, $2, $3)
+		RETURNING id::text, user_id::text, token, expires_at, used_at, created_at
+	`
+
+	var token models.PasswordResetToken
+	err := s.db.QueryRowContext(ctx, query,
+		newToken.UserID,
+		newToken.Token,
+		newToken.ExpiresAt,
+	).Scan(
+		&token.ID,
+		&token.UserID,
+		&token.Token,
+		&token.ExpiresAt,
+		&token.UsedAt,
+		&token.CreatedAt,
+	)
+
+	if err != nil {
+		if isPgError(err, foreignKeyViolation) {
+			return models.PasswordResetToken{}, ErrForeignKeyViolation
+		}
+		return models.PasswordResetToken{}, fmt.Errorf("creating password reset token: %w", err)
+	}
+
+	return token, nil
+}
+
+// GetPasswordResetToken retrieves a password reset token by its token value.
+func (s *service) GetPasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error) {
+	const query = `
+		SELECT
+			id::text,
+			user_id::text,
+			token,
+			expires_at,
+			used_at,
+			created_at
+		FROM auth.password_reset_tokens
+		WHERE token = $1
+		AND used_at IS NULL
+		AND expires_at > CURRENT_TIMESTAMP
+	`
+
+	var resetToken models.PasswordResetToken
+	err := s.db.QueryRowContext(ctx, query, token).Scan(
+		&resetToken.ID,
+		&resetToken.UserID,
+		&resetToken.Token,
+		&resetToken.ExpiresAt,
+		&resetToken.UsedAt,
+		&resetToken.CreatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.PasswordResetToken{}, ErrDBNotFound
+		}
+		return models.PasswordResetToken{}, fmt.Errorf("getting password reset token: %w", err)
+	}
+
+	return resetToken, nil
+}
+
+// MarkPasswordResetTokenAsUsed marks a password reset token as used.
+func (s *service) MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID string) error {
+	const query = `
+		UPDATE auth.password_reset_tokens
+		SET used_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+	`
+
+	result, err := s.db.ExecContext(ctx, query, tokenID)
+	if err != nil {
+		return fmt.Errorf("marking password reset token as used: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return ErrDBNotFound
+	}
+
+	return nil
+}
+
+// DeleteExpiredPasswordResetTokens removes all expired or used password reset tokens.
+func (s *service) DeleteExpiredPasswordResetTokens(ctx context.Context) error {
+	const query = `
+		DELETE FROM auth.password_reset_tokens
+		WHERE expires_at < CURRENT_TIMESTAMP OR used_at IS NOT NULL
+	`
+
+	_, err := s.db.ExecContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("deleting expired password reset tokens: %w", err)
+	}
+
+	return nil
+}
+
+// ---------------------------------------------
+// Password Operations
+// ---------------------------------------------
+
+// UpdateUserPassword updates a user's password.
+func (s *service) UpdateUserPassword(ctx context.Context, userID string, newPassword []byte) error {
+	const query = `
+		UPDATE auth.users
+		SET password = $1,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $2
+	`
+
+	result, err := s.db.ExecContext(ctx, query, newPassword, userID)
+	if err != nil {
+		return fmt.Errorf("updating user password: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return ErrDBNotFound
 	}
 
 	return nil

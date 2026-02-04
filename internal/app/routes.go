@@ -34,6 +34,8 @@ func (a *App) RegisterRoutes() *gin.Engine {
 			auth.POST("/register", a.HandleRegister)
 			auth.POST("/login", a.HandleLogin)
 			auth.POST("/refresh", a.HandleRefresh)
+			auth.POST("/password/forgot", a.HandleForgotPassword) // Request password reset email (public).
+			auth.POST("/password/reset", a.HandleResetPassword)   // Complete password reset with email token (public).
 		}
 
 		// User routes (protected - requires authentication)
@@ -41,6 +43,7 @@ func (a *App) RegisterRoutes() *gin.Engine {
 		user.Use(middleware.Authenticate(a.jwt))
 		{
 			user.GET("/me", a.HandleMe)
+			user.POST("/password/change", a.HandlePasswordChange) // Change password with current password (authenticated).
 		}
 
 		// Admin routes (protected - requires admin role)

@@ -43,3 +43,19 @@ type NewUser struct {
 	Password        []byte `json:"password"`
 	PasswordConfirm []byte `json:"password_confirm"`
 }
+
+// PasswordResetToken represents a password reset token for a user
+type PasswordResetToken struct {
+	ID        string     `json:"id"`
+	UserID    string     `json:"user_id"`
+	Token     string     `json:"-"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	UsedAt    *time.Time `json:"used_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+type NewPasswordResetToken struct {
+	UserID    string
+	Token     string
+	ExpiresAt time.Time
+}

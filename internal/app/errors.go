@@ -28,6 +28,12 @@ const (
 	ErrVerifyUser            = "internal_verify_user_error"
 	ErrInvalidUserID         = "invalid_user_id"
 	ErrPromoteUser           = "internal_promote_user_error"
+	ErrPasswordMismatch      = "password_mismatch"
+	ErrInvalidResetToken     = "invalid_or_expired_reset_token"
+	ErrSendResetEmail        = "internal_send_reset_email_error"
+	ErrCreateResetToken      = "internal_create_reset_token_error"
+	ErrResetPassword         = "internal_reset_password_error"
+	ErrUpdatePassword        = "internal_update_password_error"
 )
 
 var errorStatusMap = map[string]int{
@@ -56,6 +62,12 @@ var errorStatusMap = map[string]int{
 	ErrVerifyUser:            http.StatusInternalServerError,
 	ErrInvalidUserID:         http.StatusBadRequest,
 	ErrPromoteUser:           http.StatusInternalServerError,
+	ErrPasswordMismatch:      http.StatusUnauthorized,
+	ErrInvalidResetToken:     http.StatusBadRequest,
+	ErrSendResetEmail:        http.StatusInternalServerError,
+	ErrCreateResetToken:      http.StatusInternalServerError,
+	ErrResetPassword:         http.StatusInternalServerError,
+	ErrUpdatePassword:        http.StatusInternalServerError,
 }
 
 func statusForError(code string) int {
