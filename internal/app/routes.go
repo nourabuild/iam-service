@@ -52,7 +52,6 @@ func (a *App) RegisterRoutes() *gin.Engine {
 		admin.Use(middleware.AuthorizeAdmin())
 		{
 			admin.GET("/users", a.HandleListUsers)
-			// // make admin post
 			admin.POST("/:user_id/roles/grant", a.HandleGrantAdminRole)
 		}
 	}
