@@ -10,7 +10,7 @@ import (
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 )
 
-func (a *App) HandleWhoAmI(c *gin.Context) {
+func (a *App) HandleMe(c *gin.Context) {
 	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		writeError(c, ErrUnauthorized, nil)
@@ -40,4 +40,25 @@ func (a *App) HandleListUsers(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, users)
+}
+
+func (a *App) HandlePromoteUser(c *gin.Context) {
+	userID := c.Param("user_id")
+	if userID == "" {
+		writeError(c, ErrInvalidUserID, nil)
+		return
+	}
+
+	user, err := a.db.PromoteUserToAdmin(c.Request.Context(), userID)
+	if err != nil {
+		a.toSentry(c, "promote_user", "db", sentry.LevelError, err)
+		if errors.Is(err, sqldb.ErrDBNotFound) {
+			writeError(c, ErrUserNotFound, nil)
+			return
+		}
+		writeError(c, ErrPromoteUser, nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, user)
 }

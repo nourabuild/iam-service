@@ -52,6 +52,7 @@ type Service interface {
 	GetUserByAccount(ctx context.Context, account string) (models.User, error)
 	CreateUser(ctx context.Context, user models.NewUser) (models.User, error)
 	ListUsers(ctx context.Context) ([]models.User, error)
+	PromoteUserToAdmin(ctx context.Context, userID string) (models.User, error)
 
 	// Refresh token operations
 	CreateRefreshToken(ctx context.Context, token models.NewRefreshToken) (models.RefreshToken, error)
@@ -319,6 +320,27 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 	}
 
 	return users, nil
+}
+
+// PromoteUserToAdmin sets the is_admin flag to true for a specific user.
+func (s *service) PromoteUserToAdmin(ctx context.Context, userID string) (models.User, error) {
+	const query = `
+		UPDATE auth.users
+		SET is_admin = true,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+		RETURNING id::text, name, account, email, password, bio, dob, city, phone, is_admin, created_at, updated_at
+	`
+
+	user, err := scanUser(s.db.QueryRowContext(ctx, query, userID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.User{}, ErrDBNotFound
+		}
+		return models.User{}, fmt.Errorf("promoting user to admin: %w", err)
+	}
+
+	return user, nil
 }
 
 // ---------------------------------------------

@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func Admin() gin.HandlerFunc {
+func AuthorizeAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Get is_admin from context (set by Authenticate middleware).
 		isAdminVal, exists := c.Get(IsAdminKey)

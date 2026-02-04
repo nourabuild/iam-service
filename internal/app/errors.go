@@ -26,6 +26,8 @@ const (
 	ErrInvalidAuthHeader     = "invalid_authorization_header"
 	ErrUserNotFound          = "user_not_found"
 	ErrVerifyUser            = "internal_verify_user_error"
+	ErrInvalidUserID         = "invalid_user_id"
+	ErrPromoteUser           = "internal_promote_user_error"
 )
 
 var errorStatusMap = map[string]int{
@@ -52,6 +54,8 @@ var errorStatusMap = map[string]int{
 	ErrInvalidAuthHeader:     http.StatusUnauthorized,
 	ErrUserNotFound:          http.StatusUnauthorized,
 	ErrVerifyUser:            http.StatusInternalServerError,
+	ErrInvalidUserID:         http.StatusBadRequest,
+	ErrPromoteUser:           http.StatusInternalServerError,
 }
 
 func statusForError(code string) int {
