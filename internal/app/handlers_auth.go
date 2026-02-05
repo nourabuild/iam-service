@@ -31,7 +31,7 @@ const (
 )
 
 type LoginRequest struct {
-	Account  string `json:"account"`
+	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
@@ -135,14 +135,14 @@ func (a *App) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	req.Account = strings.TrimSpace(req.Account)
+	req.Email = strings.TrimSpace(req.Email)
 
 	if validationErrors := validateLoginInput(req); len(validationErrors) > 0 {
 		writeError(c, http.StatusBadRequest, "missing_required_fields", validationErrors)
 		return
 	}
 
-	user, err := a.db.GetUserByAccount(c.Request.Context(), req.Account)
+	user, err := a.db.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			writeError(c, http.StatusUnauthorized, "invalid_credentials", nil)
@@ -300,8 +300,8 @@ func validateRegisterInput(req models.NewUser) (string, map[string]string) {
 func validateLoginInput(req LoginRequest) map[string]string {
 	validationErrors := make(map[string]string)
 
-	if strings.TrimSpace(req.Account) == "" {
-		validationErrors["account"] = "account_required"
+	if strings.TrimSpace(req.Email) == "" {
+		validationErrors["email"] = "email_required"
 	}
 	if req.Password == "" {
 		validationErrors["password"] = "password_required"
