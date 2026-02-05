@@ -1,30 +1,15 @@
 // Package jwt provides a simple and secure JWT (JSON Web Token) service.
-//
-// JWTs are used for authentication - they let your server verify that a request
-// comes from a logged-in user without checking a database on every request.
-//
-// This package handles two types of tokens:
-//   - Access Token:  Short-lived (15 min), used for API requests
-//   - Refresh Token: Long-lived (7 days), used to get new access tokens
 package jwt
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// =============================================================================
-// Errors
-// =============================================================================
-
-// These are our custom errors. Using package-level errors like this makes it
-// easy to check what went wrong: errors.Is(err, jwt.ErrExpiredToken)
 var (
 	ErrInvalidToken     = errors.New("invalid_token")
 	ErrExpiredToken     = errors.New("expired_token")
@@ -33,83 +18,45 @@ var (
 	ErrTokenNotYetValid = errors.New("token_not_yet_valid")
 )
 
-// =============================================================================
-// Custom Claims
-// =============================================================================
-
-// CustomClaims extends the standard JWT claims with application-specific fields
-type CustomClaims struct {
+// Claims extends the standard JWT claims with application-specific fields
+type Claims struct {
 	IsAdmin bool `json:"is_admin"`
 	jwt.RegisteredClaims
 }
 
-// =============================================================================
-// Token Service
-// =============================================================================
-
-// TokenService creates and validates JWT tokens.
-// Create one instance and reuse it throughout your application.
-type TokenService struct {
-	accessSecret       []byte
-	refreshSecret      []byte
-	accessTokenExpiry  time.Duration
-	refreshTokenExpiry time.Duration
-	issuer             string
-	parser             *jwt.Parser
+type TokenRepository interface {
+	GenerateTokens(ctx context.Context, subject string, isAdmin bool) (accessToken, refreshToken string, err error)
+	ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error)
+	ParseRefreshToken(ctx context.Context, tokenString string) (*Claims, error)
+	RefreshTokens(ctx context.Context, refreshToken string) (accessToken, newRefreshToken string, err error)
+	ValidateAccessToken(ctx context.Context, tokenString string) error
+	GetSubjectFromToken(ctx context.Context, tokenString string) (string, error)
 }
 
-// NewTokenService creates a new TokenService.
-//
-// It reads configuration from environment variables:
-//   - JWT_ACCESS_SECRET:  Secret key for access tokens (required)
-//   - JWT_REFRESH_SECRET: Secret key for refresh tokens (required)
-//   - JWT_ISSUER:         Token issuer name (optional, default: "app")
-//
-// Example:
-//
-//	service := jwt.NewTokenService()
-//	tokens, err := service.GenerateTokens(ctx, "user-123")
+type TokenService struct {
+	AccessTokenSecretKey  []byte
+	RefreshTokenSecretKey []byte
+	AccessTokenExpiry     time.Duration
+	RefreshTokenExpiry    time.Duration
+	Issuer                string
+	Parser                *jwt.Parser
+}
+
 func NewTokenService() *TokenService {
-	// Read secrets from environment variables
-	accessSecret := os.Getenv("JWT_ACCESS_SECRET")
-	if accessSecret == "" {
-		log.Print("jwt: JWT_ACCESS_SECRET not set; using insecure default")
-		accessSecret = "default-access-secret-change-in-production!"
-	}
-
-	refreshSecret := os.Getenv("JWT_REFRESH_SECRET")
-	if refreshSecret == "" {
-		log.Print("jwt: JWT_REFRESH_SECRET not set; using insecure default")
-		refreshSecret = "default-refresh-secret-change-in-production"
-	}
-
-	issuer := os.Getenv("JWT_ISSUER")
-	if issuer == "" {
-		issuer = "app"
-	}
-
-	// Create parser with security options
-	parser := jwt.NewParser(
-		// Only accept HS256 algorithm - prevents "algorithm confusion" attacks
-		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
-
-		// Reject tokens without an expiration time
-		jwt.WithExpirationRequired(),
-
-		// Enforce strict base64 encoding
-		jwt.WithStrictDecoding(),
-
-		// Validate issuer
-		jwt.WithIssuer(issuer),
-	)
+	issuer := "your-app-name"
 
 	return &TokenService{
-		accessSecret:       []byte(accessSecret),
-		refreshSecret:      []byte(refreshSecret),
-		accessTokenExpiry:  15 * time.Minute,
-		refreshTokenExpiry: 7 * 24 * time.Hour,
-		issuer:             issuer,
-		parser:             parser,
+		AccessTokenSecretKey:  []byte("your-access-token-secret"),
+		RefreshTokenSecretKey: []byte("your-refresh-token-secret"),
+		AccessTokenExpiry:     15 * time.Minute,
+		RefreshTokenExpiry:    30 * 24 * time.Hour,
+		Issuer:                issuer,
+		Parser: jwt.NewParser(
+			jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+			jwt.WithExpirationRequired(),
+			jwt.WithStrictDecoding(),
+			jwt.WithIssuer(issuer),
+		),
 	}
 }
 
@@ -132,13 +79,13 @@ func (s *TokenService) GenerateTokens(ctx context.Context, subject string, isAdm
 	now := time.Now()
 
 	// Create access token
-	accessToken, err = s.createToken(subject, isAdmin, now.Add(s.accessTokenExpiry), s.accessSecret)
+	accessToken, err = s.createToken(subject, isAdmin, now.Add(s.AccessTokenExpiry), s.AccessTokenSecretKey)
 	if err != nil {
 		return "", "", fmt.Errorf("creating access token: %w", err)
 	}
 
 	// Create refresh token
-	refreshToken, err = s.createToken(subject, isAdmin, now.Add(s.refreshTokenExpiry), s.refreshSecret)
+	refreshToken, err = s.createToken(subject, isAdmin, now.Add(s.RefreshTokenExpiry), s.RefreshTokenSecretKey)
 	if err != nil {
 		return "", "", fmt.Errorf("creating refresh token: %w", err)
 	}
@@ -159,13 +106,13 @@ func (s *TokenService) GenerateTokens(ctx context.Context, subject string, isAdm
 //	}
 //	userID := claims.Subject
 //	isAdmin := claims.IsAdmin
-func (s *TokenService) ParseAccessToken(ctx context.Context, tokenString string) (*CustomClaims, error) {
-	return s.parseToken(tokenString, s.accessSecret)
+func (s *TokenService) ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error) {
+	return s.parseToken(tokenString, s.AccessTokenSecretKey)
 }
 
 // ParseRefreshToken validates a refresh token and returns its claims.
-func (s *TokenService) ParseRefreshToken(ctx context.Context, tokenString string) (*CustomClaims, error) {
-	return s.parseToken(tokenString, s.refreshSecret)
+func (s *TokenService) ParseRefreshToken(ctx context.Context, tokenString string) (*Claims, error) {
+	return s.parseToken(tokenString, s.RefreshTokenSecretKey)
 }
 
 // RefreshTokens creates new tokens using a valid refresh token.
@@ -224,11 +171,11 @@ func (s *TokenService) GetSubjectFromToken(ctx context.Context, tokenString stri
 func (s *TokenService) createToken(subject string, isAdmin bool, expiresAt time.Time, secret []byte) (string, error) {
 	now := time.Now()
 
-	claims := CustomClaims{
+	claims := Claims{
 		IsAdmin: isAdmin,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   subject,
-			Issuer:    s.issuer,
+			Issuer:    s.Issuer,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			NotBefore: jwt.NewNumericDate(now),
@@ -240,14 +187,14 @@ func (s *TokenService) createToken(subject string, isAdmin bool, expiresAt time.
 }
 
 // parseToken validates a token string and extracts its claims.
-func (s *TokenService) parseToken(tokenString string, secret []byte) (*CustomClaims, error) {
+func (s *TokenService) parseToken(tokenString string, secret []byte) (*Claims, error) {
 	if tokenString == "" {
 		return nil, ErrTokenNotFound
 	}
 
-	claims := &CustomClaims{}
+	claims := &Claims{}
 
-	token, err := s.parser.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
+	token, err := s.Parser.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
 		// Verify signing method
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])

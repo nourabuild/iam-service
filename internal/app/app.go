@@ -1,8 +1,8 @@
 package app
 
 import (
-	"github.com/nourabuild/iam-service/internal/sdk/jwt"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
+	"github.com/nourabuild/iam-service/internal/services/jwt"
 	"github.com/nourabuild/iam-service/internal/services/mailtrap"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 )

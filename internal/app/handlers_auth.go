@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/nourabuild/iam-service/internal/sdk/jwt"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
+	"github.com/nourabuild/iam-service/internal/services/jwt"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 	"golang.org/x/crypto/bcrypt"
 )
