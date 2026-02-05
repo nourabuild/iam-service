@@ -182,6 +182,7 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, 
 			dob,
 			city,
 			phone,
+			avatar_photo_id,
 			is_admin,
 			created_at,
 			updated_at
@@ -213,6 +214,7 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User
 			dob,
 			city,
 			phone,
+			avatar_photo_id,
 			is_admin,
 			created_at,
 			updated_at
@@ -244,6 +246,7 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (models.
 			dob,
 			city,
 			phone,
+			avatar_photo_id,
 			is_admin,
 			created_at,
 			updated_at
@@ -267,7 +270,7 @@ func (s *service) CreateUser(ctx context.Context, newUser models.NewUser) (model
 	const query = `
 		INSERT INTO auth.users (name, account, email, password, is_admin)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id::text, name, account, email, password, bio, dob, city, phone, is_admin, created_at, updated_at
+		RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
 	`
 
 	user, err := scanUser(s.db.QueryRowContext(ctx, query,
@@ -302,6 +305,7 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 			dob,
 			city,
 			phone,
+			avatar_photo_id,
 			is_admin,
 			created_at,
 			updated_at
@@ -338,7 +342,7 @@ func (s *service) PromoteUserToAdmin(ctx context.Context, userID string) (models
 		SET is_admin = true,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
-		RETURNING id::text, name, account, email, password, bio, dob, city, phone, is_admin, created_at, updated_at
+		RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
 	`
 
 	user, err := scanUser(s.db.QueryRowContext(ctx, query, userID))
@@ -616,6 +620,7 @@ type rowScanner interface {
 func scanUser(scanner rowScanner) (models.User, error) {
 	var user models.User
 	var bio, dob, city, phone sql.NullString
+	var avatarPhotoID sql.NullInt32
 	if err := scanner.Scan(
 		&user.ID,
 		&user.Name,
@@ -626,6 +631,7 @@ func scanUser(scanner rowScanner) (models.User, error) {
 		&dob,
 		&city,
 		&phone,
+		&avatarPhotoID,
 		&user.IsAdmin,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -637,6 +643,7 @@ func scanUser(scanner rowScanner) (models.User, error) {
 	user.DOB = StringPtr(dob)
 	user.City = StringPtr(city)
 	user.Phone = StringPtr(phone)
+	user.AvatarPhotoID = Int32Ptr(avatarPhotoID)
 
 	return user, nil
 }
@@ -713,6 +720,15 @@ func StringPtr(ns sql.NullString) *string {
 		return nil
 	}
 	return &ns.String
+}
+
+// Int32Ptr returns a pointer to an int from sql.NullInt32.
+func Int32Ptr(ni sql.NullInt32) *int {
+	if !ni.Valid {
+		return nil
+	}
+	intVal := int(ni.Int32)
+	return &intVal
 }
 
 // Int64Ptr returns a pointer to an int64 from sql.NullInt64.

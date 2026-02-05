@@ -22,18 +22,19 @@ type NewRefreshToken struct {
 
 // User represents a user in the system
 type User struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Account   string    `json:"account"`
-	Email     string    `json:"email"`
-	Password  []byte    `json:"-"`
-	Bio       *string   `json:"bio,omitempty"`
-	DOB       *string   `json:"dob,omitempty"`
-	City      *string   `json:"city,omitempty"`
-	Phone     *string   `json:"phone,omitempty"`
-	IsAdmin   bool      `json:"is_admin"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Account       string    `json:"account"`
+	Email         string    `json:"email"`
+	Password      []byte    `json:"-"`
+	Bio           *string   `json:"bio,omitempty"`
+	DOB           *string   `json:"dob,omitempty"`
+	City          *string   `json:"city,omitempty"`
+	Phone         *string   `json:"phone,omitempty"`
+	AvatarPhotoID *int      `json:"avatar_photo_id,omitempty"`
+	IsAdmin       bool      `json:"is_admin"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type NewUser struct {
