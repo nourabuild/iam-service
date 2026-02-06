@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -43,11 +45,13 @@ type TokenService struct {
 }
 
 func NewTokenService() *TokenService {
-	issuer := "your-app-name"
+	issuer := envOrDefault("JWT_ISSUER", "your-app-name")
+	accessSecret := envOrDefault("JWT_ACCESS_TOKEN_SECRET", "your-access-token-secret")
+	refreshSecret := envOrDefault("JWT_REFRESH_TOKEN_SECRET", "your-refresh-token-secret")
 
 	return &TokenService{
-		AccessTokenSecretKey:  []byte("your-access-token-secret"),
-		RefreshTokenSecretKey: []byte("your-refresh-token-secret"),
+		AccessTokenSecretKey:  []byte(accessSecret),
+		RefreshTokenSecretKey: []byte(refreshSecret),
 		AccessTokenExpiry:     15 * time.Minute,
 		RefreshTokenExpiry:    30 * 24 * time.Hour,
 		Issuer:                issuer,
@@ -58,6 +62,13 @@ func NewTokenService() *TokenService {
 			jwt.WithIssuer(issuer),
 		),
 	}
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 // =============================================================================
