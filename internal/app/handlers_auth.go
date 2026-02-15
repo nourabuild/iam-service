@@ -378,7 +378,7 @@ type ForgotPasswordRequest struct {
 
 // ResetPasswordRequest represents the request body for password reset
 type ResetPasswordRequest struct {
-	Token           string `json:"token" binding:"required"`
+	Token           string `json:"token"`                         // Optional in body, can come from query param
 	Password        string `json:"password" binding:"required"`
 	PasswordConfirm string `json:"password_confirm" binding:"required"`
 }
@@ -445,6 +445,19 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 	var req ResetPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
+		return
+	}
+
+	// Get token from query parameter if not in request body
+	if req.Token == "" {
+		req.Token = c.Query("token")
+	}
+
+	// Validate token is present
+	if req.Token == "" {
+		writeError(c, http.StatusBadRequest, "missing_reset_token", map[string]string{
+			"token": "token_required",
+		})
 		return
 	}
 
