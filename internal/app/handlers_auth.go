@@ -228,24 +228,14 @@ func (a *App) HandleRefresh(c *gin.Context) {
 		return
 	}
 
-	accessToken, newRefreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), claims.Subject, claims.IsAdmin)
+	accessToken, err := a.jwt.GenerateAccessToken(c.Request.Context(), claims.Subject, claims.IsAdmin)
 	if err != nil {
 		a.toSentry(c, "refresh", "jwt_generate", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
-	if err := a.db.RevokeRefreshToken(c.Request.Context(), storedToken.ID); err != nil {
-		a.toSentry(c, "refresh", "db_revoke", sentry.LevelError, err)
-	}
-
-	if err := a.storeRefreshToken(c.Request.Context(), claims.Subject, newRefreshToken, authRefreshTTL); err != nil {
-		a.toSentry(c, "refresh", "db_token", sentry.LevelError, err)
-		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
-		return
-	}
-
-	c.JSON(http.StatusOK, TokenResponse{AccessToken: accessToken, RefreshToken: newRefreshToken})
+	c.JSON(http.StatusOK, TokenResponse{AccessToken: accessToken, RefreshToken: req.RefreshToken})
 }
 
 func validateRegisterInput(req models.NewUser) (string, map[string]string) {

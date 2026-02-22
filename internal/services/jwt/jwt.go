@@ -28,6 +28,7 @@ type Claims struct {
 
 type TokenRepository interface {
 	GenerateTokens(ctx context.Context, subject string, isAdmin bool) (accessToken, refreshToken string, err error)
+	GenerateAccessToken(ctx context.Context, subject string, isAdmin bool) (string, error)
 	ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error)
 	ParseRefreshToken(ctx context.Context, tokenString string) (*Claims, error)
 	RefreshTokens(ctx context.Context, refreshToken string) (accessToken, newRefreshToken string, err error)
@@ -104,6 +105,18 @@ func (s *TokenService) GenerateTokens(ctx context.Context, subject string, isAdm
 	return accessToken, refreshToken, nil
 }
 
+// GenerateAccessToken creates only an access token for a user.
+func (s *TokenService) GenerateAccessToken(ctx context.Context, subject string, isAdmin bool) (string, error) {
+	now := time.Now()
+
+	accessToken, err := s.createToken(subject, isAdmin, now.Add(s.AccessTokenExpiry), s.AccessTokenSecretKey)
+	if err != nil {
+		return "", fmt.Errorf("creating access token: %w", err)
+	}
+
+	return accessToken, nil
+}
+
 // ParseAccessToken validates an access token and returns its claims.
 //
 // Call this in your authentication middleware to verify requests.
@@ -126,13 +139,13 @@ func (s *TokenService) ParseRefreshToken(ctx context.Context, tokenString string
 	return s.parseToken(tokenString, s.RefreshTokenSecretKey)
 }
 
-// RefreshTokens creates new tokens using a valid refresh token.
+// RefreshTokens creates a new access token and reuses the same refresh token.
 //
 // Call this when the client's access token has expired.
 //
 // Example:
 //
-//	newAccess, newRefresh, err := service.RefreshTokens(ctx, oldRefreshToken)
+//	newAccess, sameRefresh, err := service.RefreshTokens(ctx, oldRefreshToken)
 //	if err != nil {
 //	    http.Error(w, "Please log in again", http.StatusUnauthorized)
 //	    return
@@ -144,8 +157,13 @@ func (s *TokenService) RefreshTokens(ctx context.Context, refreshToken string) (
 		return "", "", fmt.Errorf("invalid refresh token: %w", err)
 	}
 
-	// Create new tokens for the same user with same admin status
-	return s.GenerateTokens(ctx, claims.Subject, claims.IsAdmin)
+	// Reuse refresh token until expiry/revocation; only issue a new access token.
+	accessToken, err = s.GenerateAccessToken(ctx, claims.Subject, claims.IsAdmin)
+	if err != nil {
+		return "", "", fmt.Errorf("creating access token: %w", err)
+	}
+
+	return accessToken, refreshToken, nil
 }
 
 // ValidateAccessToken checks if a token is valid.
