@@ -7,7 +7,7 @@ endif
 
 # ==============================================================================
 # Define dependencies
-GOLANG          := golang:1.25
+GOLANG          := golang:1.26
 ALPINE          := alpine:3.22
 
 POSTGRES        := postgres:17.2
@@ -54,10 +54,10 @@ list:
 
 lint:
 	CGO_ENABLED=0 go vet ./...
-	staticcheck -go 1.25.0 -checks=all ./...
+	staticcheck -checks=all ./...
 
 staticcheck:
-	staticcheck -go 1.25.0 -checks=all ./...
+	staticcheck -checks=all ./...
 
 # ==============================================================================
 # Database migrations

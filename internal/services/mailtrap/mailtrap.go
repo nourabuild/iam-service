@@ -1,3 +1,4 @@
+// Package mailtrap provides a client for sending emails via the Mailtrap API.
 package mailtrap
 
 import (

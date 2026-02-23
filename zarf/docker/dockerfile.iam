@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.25-alpine AS build_iam
+FROM golang:1.26-alpine AS build_iam
 
 ENV CGO_ENABLED=0
 ARG BUILD_REF
