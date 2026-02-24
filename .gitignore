@@ -60,3 +60,8 @@ internal/app/handlers_test.go
 .claude/skills/sentry/SKILL.md
 
 internal/services/minio
+internal/sdk/middleware/setup_test.go
+internal/sdk/middleware/auth_test.go
+internal/sdk/middleware/admin_test.go
+internal/services/sentry/sentry_test.go
+internal/services/mailtrap/mailtrap_test.go

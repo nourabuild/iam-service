@@ -20,7 +20,6 @@ var (
 	ErrTokenNotYetValid = errors.New("token_not_yet_valid")
 )
 
-// Claims extends the standard JWT claims with application-specific fields
 type Claims struct {
 	IsAdmin bool `json:"is_admin"`
 	jwt.RegisteredClaims
@@ -46,16 +45,19 @@ type TokenService struct {
 }
 
 func NewTokenService() *TokenService {
+	// 1. Read config from environment variables (fall back to dev defaults).
 	issuer := envOrDefault("JWT_ISSUER", "your-app-name")
 	accessSecret := envOrDefault("JWT_ACCESS_TOKEN_SECRET", "your-access-token-secret")
 	refreshSecret := envOrDefault("JWT_REFRESH_TOKEN_SECRET", "your-refresh-token-secret")
 
+	// 2. Build the service with separate secrets for access vs refresh tokens.
 	return &TokenService{
 		AccessTokenSecretKey:  []byte(accessSecret),
 		RefreshTokenSecretKey: []byte(refreshSecret),
 		AccessTokenExpiry:     15 * time.Minute,
 		RefreshTokenExpiry:    30 * 24 * time.Hour,
 		Issuer:                issuer,
+		// 3. Pre-configure the parser with security options shared by all parse calls.
 		Parser: jwt.NewParser(
 			jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
 			jwt.WithExpirationRequired(),
@@ -72,31 +74,17 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
-// =============================================================================
-// Public Methods
-// =============================================================================
-
 // GenerateTokens creates a new access and refresh token pair.
-//
-// Call this after a user successfully logs in.
-// The subject is typically the user's ID, and isAdmin indicates admin privileges.
-//
-// Example:
-//
-//	accessToken, refreshToken, err := service.GenerateTokens(ctx, "user-123", false)
-//	if err != nil {
-//	    return err
-//	}
 func (s *TokenService) GenerateTokens(ctx context.Context, subject string, isAdmin bool) (accessToken, refreshToken string, err error) {
 	now := time.Now()
 
-	// Create access token
+	// 1. Create short-lived access token (used on every API request).
 	accessToken, err = s.createToken(subject, isAdmin, now.Add(s.AccessTokenExpiry), s.AccessTokenSecretKey)
 	if err != nil {
 		return "", "", fmt.Errorf("creating access token: %w", err)
 	}
 
-	// Create refresh token
+	// 2. Create long-lived refresh token (used only to get a new access token).
 	refreshToken, err = s.createToken(subject, isAdmin, now.Add(s.RefreshTokenExpiry), s.RefreshTokenSecretKey)
 	if err != nil {
 		return "", "", fmt.Errorf("creating refresh token: %w", err)
@@ -118,18 +106,6 @@ func (s *TokenService) GenerateAccessToken(ctx context.Context, subject string, 
 }
 
 // ParseAccessToken validates an access token and returns its claims.
-//
-// Call this in your authentication middleware to verify requests.
-//
-// Example:
-//
-//	claims, err := service.ParseAccessToken(ctx, tokenFromHeader)
-//	if err != nil {
-//	    http.Error(w, "Unauthorized", http.StatusUnauthorized)
-//	    return
-//	}
-//	userID := claims.Subject
-//	isAdmin := claims.IsAdmin
 func (s *TokenService) ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error) {
 	return s.parseToken(tokenString, s.AccessTokenSecretKey)
 }
@@ -139,51 +115,32 @@ func (s *TokenService) ParseRefreshToken(ctx context.Context, tokenString string
 	return s.parseToken(tokenString, s.RefreshTokenSecretKey)
 }
 
-// RefreshTokens creates a new access token and reuses the same refresh token.
-//
-// Call this when the client's access token has expired.
-//
-// Example:
-//
-//	newAccess, sameRefresh, err := service.RefreshTokens(ctx, oldRefreshToken)
-//	if err != nil {
-//	    http.Error(w, "Please log in again", http.StatusUnauthorized)
-//	    return
-//	}
+// RefreshTokens validates an existing refresh token and issues a new access token.
+// The refresh token itself is returned unchanged — it stays valid until it expires.
 func (s *TokenService) RefreshTokens(ctx context.Context, refreshToken string) (accessToken, newRefreshToken string, err error) {
-	// Validate the refresh token
+	// 1. Validate the refresh token and extract who it belongs to.
 	claims, err := s.ParseRefreshToken(ctx, refreshToken)
 	if err != nil {
 		return "", "", fmt.Errorf("invalid refresh token: %w", err)
 	}
 
-	// Reuse refresh token until expiry/revocation; only issue a new access token.
+	// 2. Issue a fresh access token using the same subject and admin flag.
 	accessToken, err = s.GenerateAccessToken(ctx, claims.Subject, claims.IsAdmin)
 	if err != nil {
 		return "", "", fmt.Errorf("creating access token: %w", err)
 	}
 
+	// 3. Return the original refresh token unchanged.
 	return accessToken, refreshToken, nil
 }
 
 // ValidateAccessToken checks if a token is valid.
-//
-// Example:
-//
-//	if err := service.ValidateAccessToken(ctx, token); err != nil {
-//	    http.Error(w, "Unauthorized", http.StatusUnauthorized)
-//	    return
-//	}
 func (s *TokenService) ValidateAccessToken(ctx context.Context, tokenString string) error {
 	_, err := s.ParseAccessToken(ctx, tokenString)
 	return err
 }
 
 // GetSubjectFromToken extracts the subject (usually user ID) from a token.
-//
-// Example:
-//
-//	userID, err := service.GetSubjectFromToken(ctx, token)
 func (s *TokenService) GetSubjectFromToken(ctx context.Context, tokenString string) (string, error) {
 	claims, err := s.ParseAccessToken(ctx, tokenString)
 	if err != nil {
@@ -198,8 +155,13 @@ func (s *TokenService) GetSubjectFromToken(ctx context.Context, tokenString stri
 
 // createToken builds and signs a JWT with the given parameters.
 func (s *TokenService) createToken(subject string, isAdmin bool, expiresAt time.Time, secret []byte) (string, error) {
+	if len(secret) == 0 {
+		return "", errors.New("token secret is empty")
+	}
+
 	now := time.Now()
 
+	// 1. Bundle all claims (who the token is for, when it expires, etc.).
 	claims := Claims{
 		IsAdmin: isAdmin,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -211,32 +173,32 @@ func (s *TokenService) createToken(subject string, isAdmin bool, expiresAt time.
 		},
 	}
 
+	// 2. Sign with HMAC-SHA256 and return the "header.payload.signature" string.
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(secret)
 }
 
 // parseToken validates a token string and extracts its claims.
 func (s *TokenService) parseToken(tokenString string, secret []byte) (*Claims, error) {
+	// 1. Reject empty input before touching the jwt library.
 	if tokenString == "" {
 		return nil, ErrTokenNotFound
 	}
 
 	claims := &Claims{}
 
-	token, err := s.Parser.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
-		// Verify signing method
+	// 2. Parse and verify: the callback returns the secret used to check the signature.
+	//    We also assert the algorithm is HMAC here to guard against algorithm-confusion attacks.
+	_, err := s.Parser.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return secret, nil
 	})
 
+	// 3. Convert library errors to our sentinel errors, then do a final validity check.
 	if err != nil {
 		return nil, convertError(err)
-	}
-
-	if !token.Valid {
-		return nil, ErrInvalidToken
 	}
 
 	return claims, nil
