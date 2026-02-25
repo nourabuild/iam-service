@@ -60,3 +60,9 @@ type NewPasswordResetToken struct {
 	Token     string
 	ExpiresAt time.Time
 }
+
+type Liveness struct {
+	Status     string `json:"status"`
+	Host       string `json:"host"`
+	GOMAXPROCS int    `json:"gomaxprocs"`
+}

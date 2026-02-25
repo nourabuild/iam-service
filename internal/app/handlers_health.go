@@ -8,13 +8,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
-
-type LivenessResponse struct {
-	Status     string `json:"status"`
-	Host       string `json:"host"`
-	GOMAXPROCS int    `json:"gomaxprocs"`
-}
 
 func (a *App) HandleReadiness(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
@@ -30,7 +25,7 @@ func (a *App) HandleLiveness(c *gin.Context) {
 		host = "unavailable"
 	}
 
-	c.JSON(http.StatusOK, LivenessResponse{
+	c.JSON(http.StatusOK, models.Liveness{
 		Status:     "up",
 		Host:       host,
 		GOMAXPROCS: runtime.GOMAXPROCS(0),
