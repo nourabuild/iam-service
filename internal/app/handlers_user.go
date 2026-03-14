@@ -86,6 +86,11 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 		return
 	}
 
+	if validationErrors := validatePasswordChangeInput(req); len(validationErrors) > 0 {
+		writeError(c, http.StatusBadRequest, "missing_required_fields", validationErrors)
+		return
+	}
+
 	// Validate new passwords match
 	if req.NewPassword != req.PasswordConfirm {
 		writeError(c, http.StatusUnauthorized, "password_mismatch", map[string]string{
@@ -147,4 +152,24 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Password has been changed successfully",
 	})
+}
+
+func validatePasswordChangeInput(req ChangePasswordRequest) map[string]string {
+	validationErrors := make(map[string]string)
+
+	if req.CurrentPassword == "" {
+		validationErrors["current_password"] = "current_password_required"
+	}
+	if req.NewPassword == "" {
+		validationErrors["new_password"] = "new_password_required"
+	}
+	if req.PasswordConfirm == "" {
+		validationErrors["password_confirm"] = "password_confirm_required"
+	}
+
+	if len(validationErrors) == 0 {
+		return nil
+	}
+
+	return validationErrors
 }
