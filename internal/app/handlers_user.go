@@ -66,9 +66,9 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 
 // ChangePasswordRequest represents the request body for password change
 type ChangePasswordRequest struct {
-	CurrentPassword string `json:"current_password" binding:"required"`
-	NewPassword     string `json:"new_password" binding:"required"`
-	PasswordConfirm string `json:"password_confirm" binding:"required"`
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+	PasswordConfirm string `json:"password_confirm"`
 }
 
 // HandlePasswordChange handles password change for authenticated users
