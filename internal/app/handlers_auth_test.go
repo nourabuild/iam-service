@@ -106,6 +106,12 @@ var registerTests = []struct {
 		expectedResponse:   `{"access_token": "accessToken", "refresh_token": "refreshToken"}`,
 	},
 	{
+		body:               "--AaB03x\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nJohn Doe\r\n--AaB03x\r\nContent-Disposition: form-data; name=\"account\"\r\n\r\njohndoe\r\n--AaB03x\r\nContent-Disposition: form-data; name=\"email\"\r\n\r\nuser@example.com\r\n--AaB03x\r\nContent-Disposition: form-data; name=\"password\"\r\n\r\nPassword1!\r\n--AaB03x--\r\n",
+		contentType:        "multipart/form-data; boundary=AaB03x",
+		expectedStatusCode: http.StatusCreated,
+		expectedResponse:   `{"access_token": "accessToken", "refresh_token": "refreshToken"}`,
+	},
+	{
 		body:               `--bad-multipart-body`,
 		contentType:        "multipart/form-data",
 		expectedStatusCode: http.StatusBadRequest,

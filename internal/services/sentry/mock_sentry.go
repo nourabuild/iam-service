@@ -9,9 +9,7 @@ func NewMockSentryService() SentryRepository {
 }
 
 // CaptureException implements [SentryRepository].
-func (m *mockSentryService) CaptureException(err error) {
-	panic("unimplemented")
-}
+func (m *mockSentryService) CaptureException(err error) {}
 
 // CaptureMessage implements [SentryRepository].
 func (m *mockSentryService) CaptureMessage(message string) {
@@ -34,6 +32,4 @@ func (m *mockSentryService) Recover() {
 }
 
 // WithScope implements [SentryRepository].
-func (m *mockSentryService) WithScope(fn func(scope *Scope)) {
-	panic("unimplemented")
-}
+func (m *mockSentryService) WithScope(fn func(scope *Scope)) {}

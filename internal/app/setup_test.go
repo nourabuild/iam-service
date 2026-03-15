@@ -16,23 +16,22 @@ var engine *gin.Engine
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
 
-	mockDb := sqldb.NewMockService()
-
-	sentrySvc := sentry.NewMockSentryService()
-	defer sentrySvc.Close()
-
-	jwtSvc := jwt.NewMockTokenService()
-
-	mailtrapSvc := mailtrap.NewMockMailtrapService()
+	mockDB := sqldb.NewMockService()
+	mockSentry := sentry.NewMockSentryService()
+	// Not necessary to add defer mockSentry.Close(),
+	// os.Exit will terminate the process before the deferred function is executed.
+	mockJWT := jwt.NewMockTokenService()
+	mockMailtrap := mailtrap.NewMockMailtrapService()
 
 	app := NewApp(
-		mockDb,
-		sentrySvc,
-		jwtSvc,
-		mailtrapSvc,
+		mockDB,
+		mockSentry,
+		mockJWT,
+		mockMailtrap,
 	)
 
 	engine = app.RegisterRoutes()
 
-	os.Exit(m.Run())
+	code := m.Run()
+	os.Exit(code)
 }
