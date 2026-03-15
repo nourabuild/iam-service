@@ -26,7 +26,7 @@ func (m *mockTokenService) ParseAccessToken(ctx context.Context, tokenString str
 
 // ParseRefreshToken implements [TokenRepository].
 func (m *mockTokenService) ParseRefreshToken(ctx context.Context, tokenString string) (*Claims, error) {
-	panic("unimplemented")
+	return &Claims{}, nil
 }
 
 // RefreshTokens implements [TokenRepository].

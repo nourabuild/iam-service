@@ -2,6 +2,7 @@ package sqldb
 
 import (
 	"context"
+	"time"
 
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
@@ -25,7 +26,7 @@ func (m *mockService) CreateRefreshToken(ctx context.Context, token models.NewRe
 
 // CreateUser implements [Service].
 func (m *mockService) CreateUser(ctx context.Context, user models.NewUser) (models.User, error) {
-	panic("unimplemented")
+	return models.User{ID: "user-id"}, nil
 }
 
 // DeleteExpiredPasswordResetTokens implements [Service].
@@ -50,7 +51,7 @@ func (m *mockService) GetPasswordResetToken(ctx context.Context, token string) (
 
 // GetRefreshTokenByToken implements [Service].
 func (m *mockService) GetRefreshTokenByToken(ctx context.Context, token []byte) (models.RefreshToken, error) {
-	panic("unimplemented")
+	return models.RefreshToken{ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
 // GetUserByAccount implements [Service].
