@@ -15,7 +15,7 @@ const (
 )
 
 // Authenticate validates the Authorization header and attaches user context.
-func Authenticate(jwtService *jwt.TokenService) gin.HandlerFunc {
+func Authenticate(jwtService jwt.TokenRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {

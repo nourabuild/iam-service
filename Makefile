@@ -91,3 +91,6 @@ migrate-drop:
 
 revert:
 	git reset --hard HEAD~1
+
+test:
+	go test -coverprofile=coverage.out ./internal/app/... && go tool cover -html=coverage.out -o coverage.html

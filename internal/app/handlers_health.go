@@ -11,6 +11,8 @@ import (
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
+var osHostname = os.Hostname
+
 func (a *App) HandleReadiness(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
@@ -20,9 +22,15 @@ func (a *App) HandleReadiness(c *gin.Context) {
 }
 
 func (a *App) HandleLiveness(c *gin.Context) {
-	host, _ := os.Hostname()
+	host, _ := osHostname()
 	if host == "" {
 		host = "unavailable"
+		c.JSON(http.StatusServiceUnavailable, models.Liveness{
+			Status:     "down",
+			Host:       host,
+			GOMAXPROCS: runtime.GOMAXPROCS(0),
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, models.Liveness{

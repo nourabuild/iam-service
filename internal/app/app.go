@@ -10,14 +10,14 @@ import (
 type App struct {
 	db       sqldb.Service
 	sentry   *sentry.SentryService
-	jwt      *jwt.TokenService
+	jwt      jwt.TokenRepository
 	mailtrap *mailtrap.MailtrapService
 }
 
 func NewApp(
 	db sqldb.Service,
 	sentry *sentry.SentryService,
-	jwt *jwt.TokenService,
+	jwt jwt.TokenRepository,
 	mailtrap *mailtrap.MailtrapService,
 ) *App {
 	return &App{
