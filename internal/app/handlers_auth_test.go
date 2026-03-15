@@ -46,16 +46,25 @@ var loginTests = []struct {
 
 var registerTests = []struct {
 	body               string
+	contentType        string
 	expectedStatusCode int
 	expectedResponse   string
 }{
 	{
 		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password1%21`,
+		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusCreated,
 		expectedResponse:   `{"access_token": "accessToken", "refresh_token": "refreshToken"}`,
 	},
 	{
+		body:               `--bad-multipart-body`,
+		contentType:        "multipart/form-data",
+		expectedStatusCode: http.StatusBadRequest,
+		expectedResponse:   `{"error": "invalid_request_body"}`,
+	},
+	{
 		body:               ``,
+		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
 			"error":"missing_required_fields",
@@ -69,6 +78,7 @@ var registerTests = []struct {
 	},
 	{
 		body:               `name=&account=&email=&password=`,
+		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
 			"error":"missing_required_fields",
@@ -82,6 +92,7 @@ var registerTests = []struct {
 	},
 	{
 		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=weak`,
+		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
 			"error":"password_too_short",
@@ -92,6 +103,7 @@ var registerTests = []struct {
 	},
 	{
 		body:               `name=John+Doe&account=johndoe&email=bad-email&password=Password1%21`,
+		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
 			"error":"invalid_email",
@@ -102,6 +114,7 @@ var registerTests = []struct {
 	},
 	{
 		body:               `name=John+Doe&account=john&email=user%40example.com&password=Password1%21`,
+		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
 			"error":"account_too_short",
@@ -112,6 +125,7 @@ var registerTests = []struct {
 	},
 	{
 		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=password1%21`,
+		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
 			"error":"password_must_contain_uppercase",
@@ -122,6 +136,7 @@ var registerTests = []struct {
 	},
 	{
 		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password%21`,
+		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
 			"error":"password_must_contain_number",
@@ -132,6 +147,7 @@ var registerTests = []struct {
 	},
 	{
 		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password1`,
+		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
 			"error":"password_must_contain_special_character",
@@ -148,7 +164,7 @@ func TestHandleRegister(t *testing.T) {
 	for _, tt := range registerTests {
 		body := []byte(tt.body)
 		req, _ := http.NewRequest(http.MethodPost, uri, bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Content-Type", tt.contentType)
 
 		rr := httptest.NewRecorder()
 
