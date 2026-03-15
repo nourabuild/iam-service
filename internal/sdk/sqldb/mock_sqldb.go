@@ -9,6 +9,10 @@ import (
 
 type mockService struct{}
 
+func NewMockService() Service {
+	return &mockService{}
+}
+
 // Close implements [Service].
 func (m *mockService) Close() error {
 	panic("unimplemented")
@@ -101,8 +105,4 @@ func (m *mockService) RevokeRefreshToken(ctx context.Context, tokenID string) er
 // UpdateUserPassword implements [Service].
 func (m *mockService) UpdateUserPassword(ctx context.Context, userID string, newPassword []byte) error {
 	panic("unimplemented")
-}
-
-func NewMockService() Service {
-	return &mockService{}
 }

@@ -4,6 +4,10 @@ import "context"
 
 type mockTokenService struct{}
 
+func NewMockTokenService() TokenRepository {
+	return &mockTokenService{}
+}
+
 // GenerateAccessToken implements [TokenRepository].
 func (m *mockTokenService) GenerateAccessToken(ctx context.Context, subject string, isAdmin bool) (string, error) {
 	return "accessToken", nil
@@ -37,8 +41,4 @@ func (m *mockTokenService) RefreshTokens(ctx context.Context, refreshToken strin
 // ValidateAccessToken implements [TokenRepository].
 func (m *mockTokenService) ValidateAccessToken(ctx context.Context, tokenString string) error {
 	panic("unimplemented")
-}
-
-func NewMockTokenService() TokenRepository {
-	return &mockTokenService{}
 }

@@ -18,12 +18,12 @@ func TestMain(m *testing.M) {
 
 	mockDb := sqldb.NewMockService()
 
-	sentrySvc := sentry.NewSentryService()
+	sentrySvc := sentry.NewMockSentryService()
 	defer sentrySvc.Close()
 
 	jwtSvc := jwt.NewMockTokenService()
 
-	mailtrapSvc := mailtrap.NewMailtrapService()
+	mailtrapSvc := mailtrap.NewMockMailtrapService()
 
 	app := NewApp(
 		mockDb,

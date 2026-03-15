@@ -9,16 +9,16 @@ import (
 
 type App struct {
 	db       sqldb.Service
-	sentry   *sentry.SentryService
+	sentry   sentry.SentryRepository
 	jwt      jwt.TokenRepository
-	mailtrap *mailtrap.MailtrapService
+	mailtrap mailtrap.MailtrapRepository
 }
 
 func NewApp(
 	db sqldb.Service,
-	sentry *sentry.SentryService,
+	sentry sentry.SentryRepository,
 	jwt jwt.TokenRepository,
-	mailtrap *mailtrap.MailtrapService,
+	mailtrap mailtrap.MailtrapRepository,
 ) *App {
 	return &App{
 		db:       db,
