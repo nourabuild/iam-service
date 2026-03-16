@@ -1,27 +1,19 @@
-# Project service
+# Noura Auth
 
-<img width="718" height="656" alt="image" src="https://github.com/user-attachments/assets/b2326c6e-354a-42d3-8987-40e4c77738bb" />
 
-cmd/api/main.go - serves as the entry point responsible for service initialization and graceful shutdown
-internal/app - handles request handlers and route registration
-internal/sdk - tools
-internal/services - encapsulating service capabilities
 
-Dependency Injection, Service-Oriented Design
+Noura Auth is an authentication microservice responsible for user identity, authentication, and token management across the Noura platform. The service provides a centralized mechanism for validating users and issuing access tokens that other services in the system can trust
 
-## Goals
+The service is designed to operate in a microservices environment and expose authentication functionality through HTTP. Its primary responsibilities include user authentication, password validation, token generation, and identity verification
 
-This repository template MUST provide a standardized foundation for microservices with:
+## Navigation
 
-- **CI/CD Ready** - Pre-configured pipelines for continuous integration and deployment
-- **Observability** - Built-in metrics, logging, and tracing support
-- **Production Features** - Health checks, graceful shutdown, and configuration management
+- **main.go** is the service entry point. It initializes dependencies and manages graceful shutdown
+- **app** contains HTTP handlers and route registration
+- **sdk** provides shared utilities and supporting tools
+- **services** encapsulate external or internal service capabilities
 
 ## Getting Started
-
-These instructions will get you a copy of the project up and running on your local machine for development and testing purposes. See deployment for notes on how to deploy the project on a live system.
-
-## MakeFile
 
 Run build make command with tests
 ```bash
