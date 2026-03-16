@@ -1,4 +1,6 @@
-![Noura Auth](./noura-auth.png)
+<p align="center">
+	<img src="./noura-auth.png" alt="Noura Auth" width="420" />
+</p>
 
 
 Noura Auth is an authentication microservice responsible for user identity, authentication, and token management across the Noura platform. The service provides a centralized mechanism for validating users and issuing access tokens that other services in the system can trust
