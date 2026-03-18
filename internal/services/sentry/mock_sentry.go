@@ -1,6 +1,10 @@
 package sentry
 
-import "time"
+import (
+	"time"
+
+	githubsentry "github.com/getsentry/sentry-go"
+)
 
 type mockSentryService struct{}
 
@@ -13,23 +17,26 @@ func (m *mockSentryService) CaptureException(err error) {}
 
 // CaptureMessage implements [SentryRepository].
 func (m *mockSentryService) CaptureMessage(message string) {
-	panic("unimplemented")
 }
 
 // Close implements [SentryRepository].
 func (m *mockSentryService) Close() {
-	panic("unimplemented")
 }
 
 // Flush implements [SentryRepository].
 func (m *mockSentryService) Flush(timeout time.Duration) bool {
-	panic("unimplemented")
+	return true
 }
 
 // Recover implements [SentryRepository].
 func (m *mockSentryService) Recover() {
-	panic("unimplemented")
 }
 
 // WithScope implements [SentryRepository].
-func (m *mockSentryService) WithScope(fn func(scope *Scope)) {}
+func (m *mockSentryService) WithScope(fn func(scope *Scope)) {
+	if fn == nil {
+		return
+	}
+
+	fn(githubsentry.NewScope())
+}

@@ -30,6 +30,8 @@ const (
 	resetTokenTTL    = 1 * time.Hour // Token expires in 1 hour
 )
 
+var generateFromPassword = bcrypt.GenerateFromPassword
+
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -85,7 +87,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 		return
 	}
 
-	hashedPassword, err := bcrypt.GenerateFromPassword(req.Password, bcryptCost)
+	hashedPassword, err := generateFromPassword(req.Password, bcryptCost)
 	if err != nil {
 		a.toSentry(c, "register", "bcrypt", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_hash_error", nil)
@@ -368,7 +370,7 @@ type ForgotPasswordRequest struct {
 
 // ResetPasswordRequest represents the request body for password reset
 type ResetPasswordRequest struct {
-	Token           string `json:"token"`                         // Optional in body, can come from query param
+	Token           string `json:"token"` // Optional in body, can come from query param
 	Password        string `json:"password" binding:"required"`
 	PasswordConfirm string `json:"password_confirm" binding:"required"`
 }
@@ -478,7 +480,7 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 	}
 
 	// Hash new password
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcryptCost)
+	hashedPassword, err := generateFromPassword([]byte(req.Password), bcryptCost)
 	if err != nil {
 		a.toSentry(c, "reset_password", "bcrypt", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_hash_error", nil)

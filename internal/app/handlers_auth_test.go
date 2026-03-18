@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 var loginTests = []struct {
 	body               string
+	requestID          string
 	expectedStatusCode int
 	expectedResponse   string
 }{
@@ -42,6 +44,32 @@ var loginTests = []struct {
 		expectedStatusCode: http.StatusUnauthorized,
 		expectedResponse:   `{"error": "invalid_credentials"}`,
 	},
+	{
+		body:               `{"email": "missing_user@test.loc", "password": "password"}`,
+		expectedStatusCode: http.StatusUnauthorized,
+		expectedResponse:   `{"error": "invalid_credentials"}`,
+	},
+	{
+		body:               `{"email": "db_get_user_error@test.loc", "password": "password"}`,
+		expectedStatusCode: http.StatusInternalServerError,
+		expectedResponse:   `{"error": "internal_login_error"}`,
+	},
+	{
+		body:               `{"email": "jwt_generate_tokens_error@test.loc", "password": "password"}`,
+		expectedStatusCode: http.StatusInternalServerError,
+		expectedResponse:   `{"error": "internal_generate_tokens_error"}`,
+	},
+	{
+		body:               `{"email": "db_create_refresh_token_error@test.loc", "password": "password"}`,
+		expectedStatusCode: http.StatusInternalServerError,
+		expectedResponse:   `{"error": "internal_generate_tokens_error"}`,
+	},
+	{
+		body:               `{"email": "user@example.com",`,
+		requestID:          "req-login-unmarshal",
+		expectedStatusCode: http.StatusBadRequest,
+		expectedResponse:   `{"error": "invalid_request_body"}`,
+	},
 }
 
 func TestHandleLogin(t *testing.T) {
@@ -52,6 +80,10 @@ func TestHandleLogin(t *testing.T) {
 		body := []byte(tt.body)
 		req, _ := http.NewRequest(http.MethodPost, uri, bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
+
+		if tt.requestID != "" {
+			req.Header.Set("X-Request-ID", tt.requestID)
+		}
 
 		rr := httptest.NewRecorder()
 
@@ -96,6 +128,7 @@ func TestHandleLogin(t *testing.T) {
 var registerTests = []struct {
 	body               string
 	contentType        string
+	forceHashError     bool
 	expectedStatusCode int
 	expectedResponse   string
 }{
@@ -211,12 +244,54 @@ var registerTests = []struct {
 			}
 		}`,
 	},
+	{
+		body:               `name=John+Doe&account=duplicated_user&email=user%40example.com&password=Password1%21`,
+		contentType:        "application/x-www-form-urlencoded",
+		expectedStatusCode: http.StatusConflict,
+		expectedResponse:   `{"error": "user_already_exists"}`,
+	},
+	{
+		body:               `name=John+Doe&account=db_create_user_error&email=user%40example.com&password=Password1%21`,
+		contentType:        "application/x-www-form-urlencoded",
+		expectedStatusCode: http.StatusInternalServerError,
+		expectedResponse:   `{"error": "internal_create_user_error"}`,
+	},
+	{
+		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password1%21`,
+		contentType:        "application/x-www-form-urlencoded",
+		forceHashError:     true,
+		expectedStatusCode: http.StatusInternalServerError,
+		expectedResponse:   `{"error": "internal_hash_error"}`,
+	},
+	{
+		body:               `name=John+Doe&account=jwt_generate_tokens_error&email=user%40example.com&password=Password1%21`,
+		contentType:        "application/x-www-form-urlencoded",
+		expectedStatusCode: http.StatusInternalServerError,
+		expectedResponse:   `{"error": "internal_generate_tokens_error"}`,
+	},
+	{
+		body:               `name=John+Doe&account=db_create_refresh_token_error&email=user%40example.com&password=Password1%21`,
+		contentType:        "application/x-www-form-urlencoded",
+		expectedStatusCode: http.StatusInternalServerError,
+		expectedResponse:   `{"error": "internal_generate_tokens_error"}`,
+	},
 }
 
 func TestHandleRegister(t *testing.T) {
 	var uri = "/api/v1/auth/register"
+	originalGenerateFromPassword := generateFromPassword
+	defer func() {
+		generateFromPassword = originalGenerateFromPassword
+	}()
 
 	for _, tt := range registerTests {
+		generateFromPassword = originalGenerateFromPassword
+		if tt.forceHashError {
+			generateFromPassword = func(password []byte, cost int) ([]byte, error) {
+				return nil, errors.New("hash error")
+			}
+		}
+
 		body := []byte(tt.body)
 		req, _ := http.NewRequest(http.MethodPost, uri, bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", tt.contentType)
@@ -285,6 +360,46 @@ var refreshTests = []struct {
 			}
 		}`,
 	},
+	{
+		body:               `{"refresh_token": "jwt_expired_refresh_token"}`,
+		expectedStatusCode: http.StatusUnauthorized,
+		expectedResponse:   `{"error": "expired_token"}`,
+	},
+	{
+		body:               `{"refresh_token": "jwt_invalid_refresh_token"}`,
+		expectedStatusCode: http.StatusUnauthorized,
+		expectedResponse:   `{"error": "invalid_token"}`,
+	},
+	{
+		body:               `{"refresh_token": "jwt_parse_refresh_error"}`,
+		expectedStatusCode: http.StatusUnauthorized,
+		expectedResponse:   `{"error": "unauthorized"}`,
+	},
+	{
+		body:               `{"refresh_token": "missing_refresh_token"}`,
+		expectedStatusCode: http.StatusUnauthorized,
+		expectedResponse:   `{"error": "invalid_token"}`,
+	},
+	{
+		body:               `{"refresh_token": "db_get_refresh_token_error"}`,
+		expectedStatusCode: http.StatusUnauthorized,
+		expectedResponse:   `{"error": "unauthorized"}`,
+	},
+	{
+		body:               `{"refresh_token": "revoked_refresh_token"}`,
+		expectedStatusCode: http.StatusUnauthorized,
+		expectedResponse:   `{"error": "invalid_token"}`,
+	},
+	{
+		body:               `{"refresh_token": "expired_refresh_token"}`,
+		expectedStatusCode: http.StatusUnauthorized,
+		expectedResponse:   `{"error": "expired_token"}`,
+	},
+	{
+		body:               `{"refresh_token": "jwt_generate_access_error_token"}`,
+		expectedStatusCode: http.StatusInternalServerError,
+		expectedResponse:   `{"error": "internal_generate_tokens_error"}`,
+	},
 }
 
 func TestHandleRefresh(t *testing.T) {
@@ -305,17 +420,31 @@ func TestHandleRefresh(t *testing.T) {
 			t.Errorf("received wrong status code. expected: %v, actual: %v", tt.expectedStatusCode, rr.Code)
 		}
 
-		var actual TokenResponse
-		json.Unmarshal(rr.Body.Bytes(), &actual)
+		if tt.expectedStatusCode == http.StatusOK {
+			var actual TokenResponse
+			json.Unmarshal(rr.Body.Bytes(), &actual)
 
-		var expected TokenResponse
-		json.Unmarshal([]byte(tt.expectedResponse), &expected)
+			var expected TokenResponse
+			json.Unmarshal([]byte(tt.expectedResponse), &expected)
 
-		if expected.AccessToken != actual.AccessToken {
-			t.Errorf("received wrong accessToken. expected: %v, actual: %v", expected.AccessToken, actual.AccessToken)
+			if expected.AccessToken != actual.AccessToken {
+				t.Errorf("received wrong accessToken. expected: %v, actual: %v", expected.AccessToken, actual.AccessToken)
+			}
+			if expected.RefreshToken != actual.RefreshToken {
+				t.Errorf("received wrong refreshToken. expected: %v, actual: %v", expected.RefreshToken, actual.RefreshToken)
+			}
+			continue
 		}
-		if expected.RefreshToken != actual.RefreshToken {
-			t.Errorf("received wrong refreshToken. expected: %v, actual: %v", expected.RefreshToken, actual.RefreshToken)
-		}
+
+		var actual map[string]interface{}
+		var expected map[string]interface{}
+
+		err := json.Unmarshal(rr.Body.Bytes(), &actual)
+		assert.NoError(t, err)
+
+		err = json.Unmarshal([]byte(tt.expectedResponse), &expected)
+		assert.NoError(t, err)
+
+		assert.Equal(t, expected, actual)
 	}
 }

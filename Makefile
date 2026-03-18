@@ -94,3 +94,4 @@ revert:
 
 test:
 	go test -coverprofile=coverage.out ./internal/app/... && go tool cover -html=coverage.out -o coverage.html
+	open coverage.html
