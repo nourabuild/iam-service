@@ -53,6 +53,7 @@ func (a *App) RegisterRoutes() *gin.Engine {
 		{
 			admin.GET("/users", a.HandleListUsers)
 			admin.POST("/:user_id/roles/grant", a.HandleGrantAdminRole)
+			admin.POST("/:user_id/roles/revoke", a.HandleRevokeAdminRole)
 		}
 	}
 

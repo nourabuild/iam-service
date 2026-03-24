@@ -230,6 +230,18 @@ func (m *mockService) PromoteUserToAdmin(ctx context.Context, userID string) (mo
 	return models.User{ID: userID, IsAdmin: true}, nil
 }
 
+// DemoteUserFromAdmin implements [Service].
+func (m *mockService) DemoteUserFromAdmin(ctx context.Context, userID string) (models.User, error) {
+	if userID == "db_demote_user_error" {
+		return models.User{}, errors.New("error demoting user")
+	}
+	if userID == "missing_user" {
+		return models.User{}, ErrDBNotFound
+	}
+
+	return models.User{ID: userID, IsAdmin: false}, nil
+}
+
 // RevokeRefreshToken implements [Service].
 func (m *mockService) RevokeRefreshToken(ctx context.Context, tokenID string) error {
 	if tokenID == "db_revoke_refresh_token_error" {

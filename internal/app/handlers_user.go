@@ -64,6 +64,27 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
+func (a *App) HandleRevokeAdminRole(c *gin.Context) {
+	userID := c.Param("user_id")
+	if userID == "" {
+		writeError(c, http.StatusBadRequest, "invalid_user_id", nil)
+		return
+	}
+
+	user, err := a.db.DemoteUserFromAdmin(c.Request.Context(), userID)
+	if err != nil {
+		a.toSentry(c, "demote_user", "db", sentry.LevelError, err)
+		if errors.Is(err, sqldb.ErrDBNotFound) {
+			writeError(c, http.StatusUnauthorized, "user_not_found", nil)
+			return
+		}
+		writeError(c, http.StatusInternalServerError, "internal_demote_user_error", nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, user)
+}
+
 // ChangePasswordRequest represents the request body for password change
 type ChangePasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
