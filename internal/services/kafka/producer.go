@@ -3,45 +3,59 @@ package kafka
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 
-	kafkago "github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-type Producer interface {
-	Publish(ctx context.Context, topic, key string, value any) error
-	Close() error
+type KafkaRepository interface {
+	Produce(ctx context.Context, topic string, key []byte, value any) error
+	Close()
 }
 
-type kafkaProducer struct {
-	brokers []string
+type KafkaService struct {
+	client *kgo.Client
 }
 
-func NewProducer() Producer {
-	brokers := os.Getenv("KAFKA_BROKERS")
-	if brokers == "" {
-		brokers = "localhost:9092"
+func NewKafkaService() *KafkaService {
+	brokers := parse(os.Getenv("KAFKA_BROKERS"))
+
+	client, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers...),
+		kgo.ProducerBatchCompression(kgo.SnappyCompression()),
+		kgo.RequiredAcks(kgo.AllISRAcks()),
+		kgo.RecordRetries(3),
+	)
+	if err != nil {
+		panic(err)
 	}
-	return &kafkaProducer{brokers: []string{brokers}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+
+	if err := client.Ping(ctx); err != nil {
+		client.Close()
+		panic(err)
+	}
+
+	return &KafkaService{
+		client: client,
+	}
 }
 
-func (p *kafkaProducer) Publish(ctx context.Context, topic, key string, value any) error {
+func (p *KafkaService) Produce(ctx context.Context, topic string, key []byte, value any) error {
+	if topic == "" {
+		return nil
+	}
+
 	payload, err := json.Marshal(value)
 	if err != nil {
-		return fmt.Errorf("kafka marshal: %w", err)
+		return err
 	}
 
-	w := &kafkago.Writer{
-		Addr:  kafkago.TCP(p.brokers...),
-		Topic: topic,
-	}
-	defer w.Close()
-
-	return w.WriteMessages(ctx, kafkago.Message{
-		Key:   []byte(key),
-		Value: payload,
-	})
+	return p.client.ProduceSync(ctx, &kgo.Record{Topic: topic, Key: key, Value: payload}).FirstErr()
 }
 
-func (p *kafkaProducer) Close() error { return nil }
+func (p *KafkaService) Close() {
+	p.client.Close()
+}

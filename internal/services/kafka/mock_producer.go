@@ -1,21 +1,15 @@
 package kafka
 
-import (
-	"context"
-	"errors"
-)
+import "context"
 
-type mockProducer struct{}
+type MockProducer struct{}
 
-func NewMockProducer() Producer {
-	return &mockProducer{}
+func NewMockProducer() KafkaRepository {
+	return &MockProducer{}
 }
 
-func (m *mockProducer) Publish(ctx context.Context, topic, key string, value any) error {
-	if key == "kafka_publish_error" {
-		return errors.New("error publishing kafka message")
-	}
+func (m *MockProducer) Produce(_ context.Context, _ string, _ []byte, _ any) error {
 	return nil
 }
 
-func (m *mockProducer) Close() error { return nil }
+func (m *MockProducer) Close() {}

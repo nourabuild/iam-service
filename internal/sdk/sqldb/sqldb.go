@@ -355,10 +355,10 @@ func (s *service) UpdateUser(ctx context.Context, userID string, update models.U
 	user, err := scanUser(s.db.QueryRowContext(ctx, query,
 		update.Name,
 		update.Account,
-		NullString(update.Bio),
-		NullString(update.DOB),
-		NullString(update.City),
-		NullString(update.Phone),
+		update.Bio,
+		update.DOB,
+		update.City,
+		update.Phone,
 		userID,
 	))
 	if err != nil {

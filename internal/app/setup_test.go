@@ -24,12 +24,14 @@ func TestMain(m *testing.M) {
 	mockJWT := jwt.NewMockTokenService()
 	mockMailtrap := mailtrap.NewMockMailtrapService()
 
+	mockKafka := kafka.NewMockProducer()
+
 	app := NewApp(
 		mockDB,
 		mockSentry,
 		mockJWT,
 		mockMailtrap,
-		kafka.NewMockProducer(),
+		mockKafka,
 	)
 
 	engine = app.RegisterRoutes()

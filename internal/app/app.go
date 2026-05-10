@@ -13,7 +13,7 @@ type App struct {
 	sentry   sentry.SentryRepository
 	jwt      jwt.TokenRepository
 	mailtrap mailtrap.MailtrapRepository
-	kafka    kafka.Producer
+	kafka    kafka.KafkaRepository
 }
 
 func NewApp(
@@ -21,7 +21,7 @@ func NewApp(
 	sentry sentry.SentryRepository,
 	jwt jwt.TokenRepository,
 	mailtrap mailtrap.MailtrapRepository,
-	kafka kafka.Producer,
+	kafka kafka.KafkaRepository,
 ) *App {
 	return &App{
 		db:       db,

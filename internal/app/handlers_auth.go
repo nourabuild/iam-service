@@ -64,6 +64,7 @@ func parseMultipartOrForm(r *http.Request, maxMemory int64) error {
 }
 
 func (a *App) HandleRegister(c *gin.Context) {
+	ctx := c.Request.Context()
 	if err := parseMultipartOrForm(c.Request, maxRegisterFormMemory); err != nil {
 		a.toSentry(c, "register", "parse_form", sentry.LevelError, err)
 		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
@@ -103,7 +104,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 		PasswordConfirm: req.PasswordConfirm,
 	}
 
-	createdUser, err := a.db.CreateUser(c.Request.Context(), newUser)
+	createdUser, err := a.db.CreateUser(ctx, newUser)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
 			writeError(c, http.StatusConflict, "user_already_exists", nil)
@@ -114,20 +115,20 @@ func (a *App) HandleRegister(c *gin.Context) {
 		return
 	}
 
-	accessToken, refreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), createdUser.ID, createdUser.IsAdmin)
+	accessToken, refreshToken, err := a.jwt.GenerateTokens(ctx, createdUser.ID, createdUser.IsAdmin)
 	if err != nil {
 		a.toSentry(c, "register", "jwt", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
-	if err := a.storeRefreshToken(c.Request.Context(), createdUser.ID, refreshToken, registerRefreshTTL); err != nil {
+	if err := a.storeRefreshToken(ctx, createdUser.ID, refreshToken, registerRefreshTTL); err != nil {
 		a.toSentry(c, "register", "db_token", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
-	_ = a.kafka.Publish(c.Request.Context(), kafka.TopicUserCreated, createdUser.ID, kafka.UserCreatedEvent{
+	_ = a.kafka.Produce(ctx, kafka.TopicUserCreated, []byte(createdUser.ID), models.UserCreatedEvent{
 		EventType:  "user.created",
 		UserID:     createdUser.ID,
 		Name:       createdUser.Name,

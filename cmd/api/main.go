@@ -56,8 +56,8 @@ func run(logger *slog.Logger) error {
 	emailService := mailtrap.NewMailtrapService()
 
 	// 7. Initialize Kafka producer
-	kafkaProducer := kafka.NewProducer()
-	defer kafkaProducer.Close()
+	kafkaService := kafka.NewKafkaService()
+	defer kafkaService.Close()
 
 	// 8. App Initialization
 	iamApp := app.NewApp(
@@ -65,7 +65,7 @@ func run(logger *slog.Logger) error {
 		sentryService,
 		jwtService,
 		emailService,
-		kafkaProducer,
+		kafkaService,
 	)
 
 	// 8. Setup Gin router

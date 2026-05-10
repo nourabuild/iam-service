@@ -15,23 +15,15 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-type UpdateAccountRequest struct {
-	Name    string  `json:"name"`
-	Account string  `json:"account"`
-	Bio     *string `json:"bio"`
-	DOB     *string `json:"dob"`
-	City    *string `json:"city"`
-	Phone   *string `json:"phone"`
-}
-
 func (a *App) HandleUpdateAccount(c *gin.Context) {
+	ctx := c.Request.Context()
 	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
 	}
 
-	var req UpdateAccountRequest
+	var req models.UpdateUser
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
@@ -45,14 +37,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 		return
 	}
 
-	user, err := a.db.UpdateUser(c.Request.Context(), userID, models.UpdateUser{
-		Name:    req.Name,
-		Account: req.Account,
-		Bio:     req.Bio,
-		DOB:     req.DOB,
-		City:    req.City,
-		Phone:   req.Phone,
-	})
+	user, err := a.db.UpdateUser(c.Request.Context(), userID, req)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
 			writeError(c, http.StatusConflict, "account_already_taken", nil)
@@ -63,7 +48,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 		return
 	}
 
-	_ = a.kafka.Publish(c.Request.Context(), kafka.TopicUserUpdated, user.ID, kafka.UserUpdatedEvent{
+	_ = a.kafka.Produce(ctx, kafka.TopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
 		EventType:     "user.updated",
 		UserID:        user.ID,
 		Name:          user.Name,
@@ -81,7 +66,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-func validateUpdateAccountInput(req UpdateAccountRequest) map[string]string {
+func validateUpdateAccountInput(req models.UpdateUser) map[string]string {
 	validationErrors := make(map[string]string)
 	if req.Name == "" {
 		validationErrors["name"] = "name_required"
@@ -98,13 +83,14 @@ func validateUpdateAccountInput(req UpdateAccountRequest) map[string]string {
 }
 
 func (a *App) HandleMe(c *gin.Context) {
+	ctx := c.Request.Context()
 	userID, err := middleware.GetUserID(c)
 	if err != nil {
 		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
 	}
 
-	user, err := a.db.GetUserByID(c.Request.Context(), userID)
+	user, err := a.db.GetUserByID(ctx, userID)
 	if err != nil {
 		a.toSentry(c, "whoami", "db", sentry.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
@@ -119,7 +105,9 @@ func (a *App) HandleMe(c *gin.Context) {
 }
 
 func (a *App) HandleListUsers(c *gin.Context) {
-	users, err := a.db.ListUsers(c.Request.Context())
+	ctx := c.Request.Context()
+
+	users, err := a.db.ListUsers(ctx)
 	if err != nil {
 		a.toSentry(c, "list_users", "db", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_retrieve_users_error", nil)
@@ -130,6 +118,8 @@ func (a *App) HandleListUsers(c *gin.Context) {
 }
 
 func (a *App) HandleGrantAdminRole(c *gin.Context) {
+	ctx := c.Request.Context()
+
 	userID := c.Param("user_id")
 	if userID == "" {
 		writeError(c, http.StatusBadRequest, "invalid_user_id", nil)
@@ -147,7 +137,7 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 		return
 	}
 
-	_ = a.kafka.Publish(c.Request.Context(), kafka.TopicUserUpdated, user.ID, kafka.UserUpdatedEvent{
+	_ = a.kafka.Produce(ctx, kafka.TopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
 		EventType:     "user.updated",
 		UserID:        user.ID,
 		Name:          user.Name,
@@ -183,7 +173,7 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 		return
 	}
 
-	_ = a.kafka.Publish(c.Request.Context(), kafka.TopicUserUpdated, user.ID, kafka.UserUpdatedEvent{
+	_ = a.kafka.Produce(c.Request.Context(), kafka.TopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
 		EventType:     "user.updated",
 		UserID:        user.ID,
 		Name:          user.Name,
