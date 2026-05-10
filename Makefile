@@ -95,3 +95,27 @@ revert:
 test:
 	go test -coverprofile=coverage.out ./internal/app/... && go tool cover -html=coverage.out -o coverage.html
 	open coverage.html
+
+
+# Kafka 4.0
+kafka:
+	docker run -d --name kafka -p 9092:9092 apache/kafka:4.2.0
+
+kafka-ui:
+	docker run -d --name kafka-ui \
+  -p 8081:8080 \
+  --link kafka:kafka \
+  -e KAFKA_CLUSTERS_0_NAME=local \
+  -e KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092 \
+  provectuslabs/kafka-ui:latest
+
+kafka-topics:
+	docker exec kafka kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic iam.user.created --partitions 1 --replication-factor 1
+	docker exec kafka kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic iam.user.updated --partitions 1 --replication-factor 1
+
+kafka-topics-list:
+	docker exec kafka kafka-topics.sh --bootstrap-server localhost:9092 --list
+
+
+# docker ps
+# docker exec <container_name> createdb -U postgres noura_iam_service_db

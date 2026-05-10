@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
+	"github.com/nourabuild/iam-service/internal/services/kafka"
 	"github.com/nourabuild/iam-service/internal/services/mailtrap"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 )
@@ -28,6 +29,7 @@ func TestMain(m *testing.M) {
 		mockSentry,
 		mockJWT,
 		mockMailtrap,
+		kafka.NewMockProducer(),
 	)
 
 	engine = app.RegisterRoutes()

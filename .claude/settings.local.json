@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make migrate-up:*)",
+      "Bash(make:*)",
+      "Bash(grep:*)",
+      "Bash(wc:*)",
+      "Bash(go doc:*)",
+      "Bash(go test:*)",
+      "Bash(go version:*)",
+      "Bash(brew install:*)",
+      "Bash(go install:*)",
+      "Bash(go mod tidy:*)",
+      "Bash(go mod vendor:*)",
+      "Bash(/usr/local/go/bin/go version:*)",
+      "Bash(/opt/homebrew/bin/go version:*)"
+    ]
+  }
+}

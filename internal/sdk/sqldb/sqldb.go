@@ -52,6 +52,7 @@ type Service interface {
 	GetUserByAccount(ctx context.Context, account string) (models.User, error)
 	CreateUser(ctx context.Context, user models.NewUser) (models.User, error)
 	ListUsers(ctx context.Context) ([]models.User, error)
+	UpdateUser(ctx context.Context, userID string, update models.UpdateUser) (models.User, error)
 	PromoteUserToAdmin(ctx context.Context, userID string) (models.User, error)
 	DemoteUserFromAdmin(ctx context.Context, userID string) (models.User, error)
 
@@ -334,6 +335,43 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 	}
 
 	return users, nil
+}
+
+// UpdateUser updates a user's profile fields.
+func (s *service) UpdateUser(ctx context.Context, userID string, update models.UpdateUser) (models.User, error) {
+	const query = `
+		UPDATE auth.users
+		SET name    = $1,
+		    account = $2,
+		    bio     = $3,
+		    dob     = $4,
+		    city    = $5,
+		    phone   = $6,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $7
+		RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
+	`
+
+	user, err := scanUser(s.db.QueryRowContext(ctx, query,
+		update.Name,
+		update.Account,
+		NullString(update.Bio),
+		NullString(update.DOB),
+		NullString(update.City),
+		NullString(update.Phone),
+		userID,
+	))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.User{}, ErrDBNotFound
+		}
+		if isPgError(err, uniqueViolation) {
+			return models.User{}, ErrDBDuplicatedEntry
+		}
+		return models.User{}, fmt.Errorf("updating user: %w", err)
+	}
+
+	return user, nil
 }
 
 // PromoteUserToAdmin sets the is_admin flag to true for a specific user.

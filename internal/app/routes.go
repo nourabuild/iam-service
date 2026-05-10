@@ -44,6 +44,8 @@ func (a *App) RegisterRoutes() *gin.Engine {
 		{
 			user.GET("/me", a.HandleMe)
 			user.POST("/me/password/change", a.HandlePasswordChange) // Change password with current password (authenticated).
+			// update my account
+			user.POST("/me/account", a.HandleUpdateAccount) // Update user account information (authenticated).
 		}
 
 		// Admin routes (protected - requires admin role)

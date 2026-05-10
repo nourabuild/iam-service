@@ -257,3 +257,26 @@ func (m *mockService) UpdateUserPassword(ctx context.Context, userID string, new
 	}
 	return nil
 }
+
+// UpdateUser implements [Service].
+func (m *mockService) UpdateUser(ctx context.Context, userID string, update models.UpdateUser) (models.User, error) {
+	if userID == "db_update_user_error" {
+		return models.User{}, errors.New("error updating user")
+	}
+	if update.Account == "taken_account" {
+		return models.User{}, ErrDBDuplicatedEntry
+	}
+	return models.User{
+		ID:        userID,
+		Name:      update.Name,
+		Account:   update.Account,
+		Email:     "user@example.com",
+		Bio:       update.Bio,
+		DOB:       update.DOB,
+		City:      update.City,
+		Phone:     update.Phone,
+		IsAdmin:   false,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}, nil
+}

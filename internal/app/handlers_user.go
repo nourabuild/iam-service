@@ -3,13 +3,99 @@ package app
 import (
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nourabuild/iam-service/internal/sdk/middleware"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
+	"github.com/nourabuild/iam-service/internal/services/kafka"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 	"golang.org/x/crypto/bcrypt"
 )
+
+type UpdateAccountRequest struct {
+	Name    string  `json:"name"`
+	Account string  `json:"account"`
+	Bio     *string `json:"bio"`
+	DOB     *string `json:"dob"`
+	City    *string `json:"city"`
+	Phone   *string `json:"phone"`
+}
+
+func (a *App) HandleUpdateAccount(c *gin.Context) {
+	userID, err := middleware.GetUserID(c)
+	if err != nil {
+		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
+	var req UpdateAccountRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
+		return
+	}
+
+	req.Name = strings.TrimSpace(req.Name)
+	req.Account = strings.TrimSpace(req.Account)
+
+	if validationErrors := validateUpdateAccountInput(req); len(validationErrors) > 0 {
+		writeError(c, http.StatusBadRequest, "missing_required_fields", validationErrors)
+		return
+	}
+
+	user, err := a.db.UpdateUser(c.Request.Context(), userID, models.UpdateUser{
+		Name:    req.Name,
+		Account: req.Account,
+		Bio:     req.Bio,
+		DOB:     req.DOB,
+		City:    req.City,
+		Phone:   req.Phone,
+	})
+	if err != nil {
+		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
+			writeError(c, http.StatusConflict, "account_already_taken", nil)
+			return
+		}
+		a.toSentry(c, "update_account", "db", sentry.LevelError, err)
+		writeError(c, http.StatusInternalServerError, "internal_update_account_error", nil)
+		return
+	}
+
+	_ = a.kafka.Publish(c.Request.Context(), kafka.TopicUserUpdated, user.ID, kafka.UserUpdatedEvent{
+		EventType:     "user.updated",
+		UserID:        user.ID,
+		Name:          user.Name,
+		Email:         user.Email,
+		Account:       user.Account,
+		Bio:           user.Bio,
+		DOB:           user.DOB,
+		City:          user.City,
+		Phone:         user.Phone,
+		AvatarPhotoID: user.AvatarPhotoID,
+		IsAdmin:       user.IsAdmin,
+		OccurredAt:    time.Now().UTC(),
+	})
+
+	c.JSON(http.StatusOK, user)
+}
+
+func validateUpdateAccountInput(req UpdateAccountRequest) map[string]string {
+	validationErrors := make(map[string]string)
+	if req.Name == "" {
+		validationErrors["name"] = "name_required"
+	}
+	if req.Account == "" {
+		validationErrors["account"] = "account_required"
+	} else if len(req.Account) < minAccountLength {
+		validationErrors["account"] = "account_too_short"
+	}
+	if len(validationErrors) == 0 {
+		return nil
+	}
+	return validationErrors
+}
 
 func (a *App) HandleMe(c *gin.Context) {
 	userID, err := middleware.GetUserID(c)
@@ -61,6 +147,21 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 		return
 	}
 
+	_ = a.kafka.Publish(c.Request.Context(), kafka.TopicUserUpdated, user.ID, kafka.UserUpdatedEvent{
+		EventType:     "user.updated",
+		UserID:        user.ID,
+		Name:          user.Name,
+		Email:         user.Email,
+		Account:       user.Account,
+		Bio:           user.Bio,
+		DOB:           user.DOB,
+		City:          user.City,
+		Phone:         user.Phone,
+		AvatarPhotoID: user.AvatarPhotoID,
+		IsAdmin:       user.IsAdmin,
+		OccurredAt:    time.Now().UTC(),
+	})
+
 	c.JSON(http.StatusOK, user)
 }
 
@@ -81,6 +182,21 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, "internal_demote_user_error", nil)
 		return
 	}
+
+	_ = a.kafka.Publish(c.Request.Context(), kafka.TopicUserUpdated, user.ID, kafka.UserUpdatedEvent{
+		EventType:     "user.updated",
+		UserID:        user.ID,
+		Name:          user.Name,
+		Email:         user.Email,
+		Account:       user.Account,
+		Bio:           user.Bio,
+		DOB:           user.DOB,
+		City:          user.City,
+		Phone:         user.Phone,
+		AvatarPhotoID: user.AvatarPhotoID,
+		IsAdmin:       user.IsAdmin,
+		OccurredAt:    time.Now().UTC(),
+	})
 
 	c.JSON(http.StatusOK, user)
 }

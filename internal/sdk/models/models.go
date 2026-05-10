@@ -45,6 +45,15 @@ type NewUser struct {
 	PasswordConfirm []byte `json:"password_confirm"`
 }
 
+type UpdateUser struct {
+	Name    string  `json:"name"`
+	Account string  `json:"account"`
+	Bio     *string `json:"bio"`
+	DOB     *string `json:"dob"`
+	City    *string `json:"city"`
+	Phone   *string `json:"phone"`
+}
+
 // PasswordResetToken represents a password reset token for a user
 type PasswordResetToken struct {
 	ID        string     `json:"id"`

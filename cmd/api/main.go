@@ -16,6 +16,7 @@ import (
 	"github.com/nourabuild/iam-service/internal/app"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
+	"github.com/nourabuild/iam-service/internal/services/kafka"
 	"github.com/nourabuild/iam-service/internal/services/mailtrap"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 )
@@ -54,12 +55,17 @@ func run(logger *slog.Logger) error {
 	// 6. Initialize Mailtrap service
 	emailService := mailtrap.NewMailtrapService()
 
-	// 7. App Initialization
+	// 7. Initialize Kafka producer
+	kafkaProducer := kafka.NewProducer()
+	defer kafkaProducer.Close()
+
+	// 8. App Initialization
 	iamApp := app.NewApp(
 		sqlService,
 		sentryService,
 		jwtService,
 		emailService,
+		kafkaProducer,
 	)
 
 	// 8. Setup Gin router

@@ -13,6 +13,7 @@ import (
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
+	"github.com/nourabuild/iam-service/internal/services/kafka"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -125,6 +126,16 @@ func (a *App) HandleRegister(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
+
+	_ = a.kafka.Publish(c.Request.Context(), kafka.TopicUserCreated, createdUser.ID, kafka.UserCreatedEvent{
+		EventType:  "user.created",
+		UserID:     createdUser.ID,
+		Name:       createdUser.Name,
+		Email:      createdUser.Email,
+		Account:    createdUser.Account,
+		IsAdmin:    createdUser.IsAdmin,
+		OccurredAt: time.Now().UTC(),
+	})
 
 	c.JSON(http.StatusCreated, TokenResponse{AccessToken: accessToken, RefreshToken: refreshToken})
 }
