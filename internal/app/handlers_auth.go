@@ -128,7 +128,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 		return
 	}
 
-	_ = a.kafka.Produce(ctx, kafka.TopicUserCreated, []byte(createdUser.ID), models.UserCreatedEvent{
+	_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserCreated, []byte(createdUser.ID), models.UserCreatedEvent{
 		EventType:  "user.created",
 		UserID:     createdUser.ID,
 		Name:       createdUser.Name,

@@ -48,7 +48,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 		return
 	}
 
-	_ = a.kafka.Produce(ctx, kafka.TopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
+	_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
 		EventType:     "user.updated",
 		UserID:        user.ID,
 		Name:          user.Name,
@@ -137,7 +137,7 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 		return
 	}
 
-	_ = a.kafka.Produce(ctx, kafka.TopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
+	_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
 		EventType:     "user.updated",
 		UserID:        user.ID,
 		Name:          user.Name,
@@ -173,7 +173,7 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 		return
 	}
 
-	_ = a.kafka.Produce(c.Request.Context(), kafka.TopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
+	_ = a.kafka.Produce(c.Request.Context(), kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
 		EventType:     "user.updated",
 		UserID:        user.ID,
 		Name:          user.Name,
