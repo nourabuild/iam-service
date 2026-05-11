@@ -24,8 +24,13 @@ type KafkaService struct {
 	client *kgo.Client
 }
 
+type noopKafka struct{}
+
+func (noopKafka) Produce(_ context.Context, _ string, _ []byte, _ any) error { return nil }
+func (noopKafka) Close()                                                      {}
+
 // no consumer, no handle
-func NewKafkaService() *KafkaService {
+func NewKafkaService() KafkaRepository {
 	brokers := os.Getenv("KAFKA_BROKERS")
 	if brokers == "" {
 		brokers = "localhost:9092"
@@ -38,7 +43,7 @@ func NewKafkaService() *KafkaService {
 		kgo.RecordRetries(3),
 	)
 	if err != nil {
-		panic("failed to create Kafka client: " + err.Error())
+		return noopKafka{}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -46,7 +51,7 @@ func NewKafkaService() *KafkaService {
 
 	if err := client.Ping(ctx); err != nil {
 		client.Close()
-		panic("kafka ping failed: " + err.Error())
+		return noopKafka{}
 	}
 
 	return &KafkaService{client: client}
