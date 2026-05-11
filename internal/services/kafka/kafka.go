@@ -27,7 +27,7 @@ type KafkaService struct {
 type noopKafka struct{}
 
 func (noopKafka) Produce(_ context.Context, _ string, _ []byte, _ any) error { return nil }
-func (noopKafka) Close()                                                      {}
+func (noopKafka) Close()                                                     {}
 
 // no consumer, no handle
 func NewKafkaService() KafkaRepository {
