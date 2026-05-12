@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -26,8 +27,11 @@ type KafkaService struct {
 
 type noopKafka struct{}
 
-func (noopKafka) Produce(_ context.Context, _ string, _ []byte, _ any) error { return nil }
-func (noopKafka) Close()                                                     {}
+func (noopKafka) Produce(_ context.Context, topic string, _ []byte, _ any) error {
+	slog.Info("kafka producer (noop) skipped send — broker unreachable at startup", "topic", topic)
+	return nil
+}
+func (noopKafka) Close() {}
 
 // no consumer, no handle
 func NewKafkaService() KafkaRepository {
@@ -64,14 +68,23 @@ func (s *KafkaService) Produce(ctx context.Context, topic string, key []byte, va
 
 	data, err := json.Marshal(value)
 	if err != nil {
+		slog.Info("kafka producer marshal failed", "topic", topic, "error", err)
 		return err
 	}
 
-	return s.client.ProduceSync(ctx, &kgo.Record{
+	start := time.Now()
+	err = s.client.ProduceSync(ctx, &kgo.Record{
 		Topic: topic,
 		Key:   key,
 		Value: data,
 	}).FirstErr()
+	if err != nil {
+		slog.Info("kafka producer send failed", "topic", topic, "key", string(key), "bytes", len(data), "elapsed", time.Since(start), "error", err)
+		return err
+	}
+
+	slog.Info("kafka producer sent data", "topic", topic, "key", string(key), "bytes", len(data), "elapsed", time.Since(start))
+	return nil
 }
 
 func (s *KafkaService) Close() {
