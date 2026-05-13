@@ -25,14 +25,6 @@ type KafkaService struct {
 	client *kgo.Client
 }
 
-type noopKafka struct{}
-
-func (noopKafka) Produce(_ context.Context, topic string, _ []byte, _ any) error {
-	slog.Info("kafka producer (noop) skipped send — broker unreachable at startup", "topic", topic)
-	return nil
-}
-func (noopKafka) Close() {}
-
 // no consumer, no handle
 func NewKafkaService() KafkaRepository {
 	brokers := os.Getenv("KAFKA_BROKERS")
@@ -47,16 +39,16 @@ func NewKafkaService() KafkaRepository {
 		kgo.RecordRetries(3),
 	)
 	if err != nil {
-		return noopKafka{}
+		panic("failed to create kafka client: " + err.Error())
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// defer cancel()
 
-	if err := client.Ping(ctx); err != nil {
-		client.Close()
-		return noopKafka{}
-	}
+	// if err := client.Ping(ctx); err != nil {
+	// 	client.Close()
+	// 	panic("kafka ping failed: " + err.Error())
+	// }
 
 	return &KafkaService{client: client}
 }
