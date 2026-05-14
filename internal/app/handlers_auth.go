@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -128,7 +129,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 		return
 	}
 
-	_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserCreated, []byte(createdUser.ID), models.UserCreatedEvent{
+	event := models.UserCreatedEvent{
 		EventType:  "user.created",
 		UserID:     createdUser.ID,
 		Name:       createdUser.Name,
@@ -136,7 +137,14 @@ func (a *App) HandleRegister(c *gin.Context) {
 		Account:    createdUser.Account,
 		IsAdmin:    createdUser.IsAdmin,
 		OccurredAt: time.Now().UTC(),
-	})
+	}
+	go func() {
+		produceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := a.kafka.Produce(produceCtx, kafka.ProduceTopicUserCreated, []byte(createdUser.ID), event); err != nil {
+			a.toSentry(c, "register", "kafka", sentry.LevelError, err)
+		}
+	}()
 
 	c.JSON(http.StatusCreated, TokenResponse{AccessToken: accessToken, RefreshToken: refreshToken})
 }

@@ -3,17 +3,23 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 const (
 	ProduceTopicUserCreated = "iam.user.created"
 	ProduceTopicUserUpdated = "iam.user.updated"
+
+	defaultPartitions int32 = 3
+	defaultReplicas   int16 = 1
 )
 
 type KafkaRepository interface {
@@ -42,13 +48,28 @@ func NewKafkaService() KafkaRepository {
 		panic("failed to create kafka client: " + err.Error())
 	}
 
-	// ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	// defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	// if err := client.Ping(ctx); err != nil {
-	// 	client.Close()
-	// 	panic("kafka ping failed: " + err.Error())
-	// }
+	// --- Inlined ensureTopics logic ---
+	adm := kadm.NewClient(client)
+	topics := []string{ProduceTopicUserCreated, ProduceTopicUserUpdated}
+
+	resp, err := adm.CreateTopics(ctx, defaultPartitions, defaultReplicas, nil, topics...)
+	if err != nil {
+		client.Close()
+		panic("failed to ensure kafka topics: " + err.Error())
+	}
+
+	for _, r := range resp {
+		existed := errors.Is(r.Err, kerr.TopicAlreadyExists)
+		if r.Err != nil && !existed {
+			client.Close()
+			panic("failed to ensure kafka topic " + r.Topic + ": " + r.Err.Error())
+		}
+		slog.Info("kafka topic ensured", "topic", r.Topic, "already_existed", existed)
+	}
+	// ----------------------------------
 
 	return &KafkaService{client: client}
 }
