@@ -50,7 +50,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 
 	if a.kafka != nil {
 		_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
-			EventType:     "user.updated",
+			EventType:     "UserUpdated",
 			UserID:        user.ID,
 			Name:          user.Name,
 			Email:         user.Email,
@@ -141,7 +141,7 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 
 	if a.kafka != nil {
 		_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
-			EventType:     "user.updated",
+			EventType:     "UserUpdated",
 			UserID:        user.ID,
 			Name:          user.Name,
 			Email:         user.Email,
@@ -179,7 +179,7 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 
 	if a.kafka != nil {
 		_ = a.kafka.Produce(c.Request.Context(), kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
-			EventType:     "user.updated",
+			EventType:     "UserUpdated",
 			UserID:        user.ID,
 			Name:          user.Name,
 			Email:         user.Email,

@@ -130,7 +130,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 	}
 
 	event := models.UserCreatedEvent{
-		EventType:  "user.created",
+		EventType:  "UserCreated",
 		UserID:     createdUser.ID,
 		Name:       createdUser.Name,
 		Email:      createdUser.Email,
