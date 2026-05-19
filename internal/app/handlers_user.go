@@ -48,20 +48,22 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 		return
 	}
 
-	_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
-		EventType:     "user.updated",
-		UserID:        user.ID,
-		Name:          user.Name,
-		Email:         user.Email,
-		Account:       user.Account,
-		Bio:           user.Bio,
-		DOB:           user.DOB,
-		City:          user.City,
-		Phone:         user.Phone,
-		AvatarPhotoID: user.AvatarPhotoID,
-		IsAdmin:       user.IsAdmin,
-		OccurredAt:    time.Now().UTC(),
-	})
+	if a.kafka != nil {
+		_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
+			EventType:     "user.updated",
+			UserID:        user.ID,
+			Name:          user.Name,
+			Email:         user.Email,
+			Account:       user.Account,
+			Bio:           user.Bio,
+			DOB:           user.DOB,
+			City:          user.City,
+			Phone:         user.Phone,
+			AvatarPhotoID: user.AvatarPhotoID,
+			IsAdmin:       user.IsAdmin,
+			OccurredAt:    time.Now().UTC(),
+		})
+	}
 
 	c.JSON(http.StatusOK, user)
 }
@@ -137,20 +139,22 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 		return
 	}
 
-	_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
-		EventType:     "user.updated",
-		UserID:        user.ID,
-		Name:          user.Name,
-		Email:         user.Email,
-		Account:       user.Account,
-		Bio:           user.Bio,
-		DOB:           user.DOB,
-		City:          user.City,
-		Phone:         user.Phone,
-		AvatarPhotoID: user.AvatarPhotoID,
-		IsAdmin:       user.IsAdmin,
-		OccurredAt:    time.Now().UTC(),
-	})
+	if a.kafka != nil {
+		_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
+			EventType:     "user.updated",
+			UserID:        user.ID,
+			Name:          user.Name,
+			Email:         user.Email,
+			Account:       user.Account,
+			Bio:           user.Bio,
+			DOB:           user.DOB,
+			City:          user.City,
+			Phone:         user.Phone,
+			AvatarPhotoID: user.AvatarPhotoID,
+			IsAdmin:       user.IsAdmin,
+			OccurredAt:    time.Now().UTC(),
+		})
+	}
 
 	c.JSON(http.StatusOK, user)
 }
@@ -173,20 +177,22 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 		return
 	}
 
-	_ = a.kafka.Produce(c.Request.Context(), kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
-		EventType:     "user.updated",
-		UserID:        user.ID,
-		Name:          user.Name,
-		Email:         user.Email,
-		Account:       user.Account,
-		Bio:           user.Bio,
-		DOB:           user.DOB,
-		City:          user.City,
-		Phone:         user.Phone,
-		AvatarPhotoID: user.AvatarPhotoID,
-		IsAdmin:       user.IsAdmin,
-		OccurredAt:    time.Now().UTC(),
-	})
+	if a.kafka != nil {
+		_ = a.kafka.Produce(c.Request.Context(), kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
+			EventType:     "user.updated",
+			UserID:        user.ID,
+			Name:          user.Name,
+			Email:         user.Email,
+			Account:       user.Account,
+			Bio:           user.Bio,
+			DOB:           user.DOB,
+			City:          user.City,
+			Phone:         user.Phone,
+			AvatarPhotoID: user.AvatarPhotoID,
+			IsAdmin:       user.IsAdmin,
+			OccurredAt:    time.Now().UTC(),
+		})
+	}
 
 	c.JSON(http.StatusOK, user)
 }

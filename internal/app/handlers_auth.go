@@ -138,13 +138,15 @@ func (a *App) HandleRegister(c *gin.Context) {
 		IsAdmin:    createdUser.IsAdmin,
 		OccurredAt: time.Now().UTC(),
 	}
-	go func() {
-		produceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := a.kafka.Produce(produceCtx, kafka.ProduceTopicUserCreated, []byte(createdUser.ID), event); err != nil {
-			a.toSentry(c, "register", "kafka", sentry.LevelError, err)
-		}
-	}()
+	if a.kafka != nil {
+		go func() {
+			produceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := a.kafka.Produce(produceCtx, kafka.ProduceTopicUserCreated, []byte(createdUser.ID), event); err != nil {
+				a.toSentry(c, "register", "kafka", sentry.LevelError, err)
+			}
+		}()
+	}
 
 	c.JSON(http.StatusCreated, TokenResponse{AccessToken: accessToken, RefreshToken: refreshToken})
 }
