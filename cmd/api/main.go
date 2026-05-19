@@ -57,7 +57,9 @@ func run(logger *slog.Logger) error {
 
 	// 7. Initialize Kafka producer
 	kafkaService := kafka.NewKafkaService()
-	defer kafkaService.Close()
+	if kafkaService != nil {
+		defer kafkaService.Close()
+	}
 
 	// 8. App Initialization
 	iamApp := app.NewApp(
