@@ -10,6 +10,16 @@ import (
 
 type mockService struct{}
 
+// CreateView implements [Service].
+func (m *mockService) CreateView(ctx context.Context, view models.NewView) (models.View, error) {
+	panic("unimplemented")
+}
+
+// GetViewByUserID implements [Service].
+func (m *mockService) GetViewByUserID(ctx context.Context, userID string) (models.View, error) {
+	panic("unimplemented")
+}
+
 func NewMockService() Service {
 	return &mockService{}
 }
