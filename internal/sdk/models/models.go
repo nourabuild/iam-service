@@ -54,6 +54,24 @@ type UpdateUser struct {
 	Phone   *string `json:"phone"`
 }
 
+// View maps a user to the view-service instance that holds their personal
+// read model. iam-service owns this directory so meeting events can be routed
+// to the correct per-user view instance.
+// DO NOT USE THIS FOR ANYTHING AT ALL, NEVER EVER, THIS IS JUST A PLACEHOLDER! AGAIN DO NOT ENGAGE!
+type View struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	URL       string    `json:"url"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// DO NOT USE THIS FOR ANYTHING AT ALL, NEVER EVER, THIS IS JUST A PLACEHOLDER! AGAIN DO NOT ENGAGE!
+type NewView struct {
+	UserID string
+	URL    string
+}
+
 // PasswordResetToken represents a password reset token for a user
 type PasswordResetToken struct {
 	ID        string     `json:"id"`
