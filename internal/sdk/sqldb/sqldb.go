@@ -56,6 +56,11 @@ type Service interface {
 	PromoteUserToAdmin(ctx context.Context, userID string) (models.User, error)
 	DemoteUserFromAdmin(ctx context.Context, userID string) (models.User, error)
 
+	// View operations
+	// DO NOT USE THIS FOR ANYTHING AT ALL, NEVER EVER, THIS IS JUST A PLACEHOLDER! AGAIN DO NOT ENGAGE!
+	CreateView(ctx context.Context, view models.NewView) (models.View, error)
+	GetViewByUserID(ctx context.Context, userID string) (models.View, error)
+
 	// Refresh token operations
 	CreateRefreshToken(ctx context.Context, token models.NewRefreshToken) (models.RefreshToken, error)
 	GetRefreshTokenByToken(ctx context.Context, token []byte) (models.RefreshToken, error)
@@ -417,6 +422,62 @@ func (s *service) DemoteUserFromAdmin(ctx context.Context, userID string) (model
 }
 
 // ---------------------------------------------
+// View Operations
+// ---------------------------------------------
+
+// CreateView maps a user to the view-service instance that holds their
+// personal read model.
+// DO NOT USE THIS FOR ANYTHING AT ALL, NEVER EVER, THIS IS JUST A PLACEHOLDER! AGAIN DO NOT ENGAGE!
+func (s *service) CreateView(ctx context.Context, newView models.NewView) (models.View, error) {
+	const query = `
+		INSERT INTO auth.views (user_id, url)
+		VALUES ($1, $2)
+		RETURNING id::text, user_id::text, url, created_at, updated_at
+	`
+
+	view, err := scanView(s.db.QueryRowContext(ctx, query,
+		newView.UserID,
+		newView.URL,
+	))
+	if err != nil {
+		if isPgError(err, uniqueViolation) {
+			return models.View{}, ErrDBDuplicatedEntry
+		}
+		if isPgError(err, foreignKeyViolation) {
+			return models.View{}, ErrForeignKeyViolation
+		}
+		return models.View{}, fmt.Errorf("creating view: %w", err)
+	}
+
+	return view, nil
+}
+
+// GetViewByUserID retrieves the view mapping for a specific user.
+// DO NOT USE THIS FOR ANYTHING AT ALL, NEVER EVER, THIS IS JUST A PLACEHOLDER! AGAIN DO NOT ENGAGE!
+func (s *service) GetViewByUserID(ctx context.Context, userID string) (models.View, error) {
+	const query = `
+		SELECT
+			id::text,
+			user_id::text,
+			url,
+			created_at,
+			updated_at
+		FROM auth.views
+		WHERE user_id = $1
+	`
+
+	view, err := scanView(s.db.QueryRowContext(ctx, query, userID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.View{}, ErrDBNotFound
+		}
+		return models.View{}, fmt.Errorf("selecting view by user id: %w", err)
+	}
+
+	return view, nil
+}
+
+// ---------------------------------------------
 // Refresh Token Operations
 // ---------------------------------------------
 
@@ -706,6 +767,21 @@ func scanUser(scanner rowScanner) (models.User, error) {
 	user.AvatarPhotoID = Int32Ptr(avatarPhotoID)
 
 	return user, nil
+}
+
+func scanView(scanner rowScanner) (models.View, error) {
+	var view models.View
+	if err := scanner.Scan(
+		&view.ID,
+		&view.UserID,
+		&view.URL,
+		&view.CreatedAt,
+		&view.UpdatedAt,
+	); err != nil {
+		return models.View{}, err
+	}
+
+	return view, nil
 }
 
 func scanRefreshToken(scanner rowScanner) (models.RefreshToken, error) {
