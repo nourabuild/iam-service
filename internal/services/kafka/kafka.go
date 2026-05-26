@@ -18,12 +18,15 @@ import (
 const (
 	ProduceTopicUserCreated = "iam.user.created"
 	ProduceTopicUserUpdated = "iam.user.updated"
+	HeaderCorrelationID     = "correlation_id"
 )
 
 type KafkaRepository interface {
-	Produce(ctx context.Context, topic string, key []byte, value any) error
+	Produce(ctx context.Context, topic string, key []byte, value any, headers ...kgo.RecordHeader) error
 	Close()
 }
+
+type RecordHeader = kgo.RecordHeader
 
 type KafkaService struct {
 	client *kgo.Client
@@ -80,7 +83,11 @@ func NewKafkaService() KafkaRepository {
 	return &KafkaService{client: client}
 }
 
-func (s *KafkaService) Produce(ctx context.Context, topic string, key []byte, value any) error {
+func CorrelationIDHeader(value string) kgo.RecordHeader {
+	return kgo.RecordHeader{Key: HeaderCorrelationID, Value: []byte(value)}
+}
+
+func (s *KafkaService) Produce(ctx context.Context, topic string, key []byte, value any, headers ...kgo.RecordHeader) error {
 	if topic == "" {
 		return nil
 	}
@@ -93,9 +100,10 @@ func (s *KafkaService) Produce(ctx context.Context, topic string, key []byte, va
 
 	start := time.Now()
 	err = s.client.ProduceSync(ctx, &kgo.Record{
-		Topic: topic,
-		Key:   key,
-		Value: data,
+		Topic:   topic,
+		Key:     key,
+		Value:   data,
+		Headers: headers,
 	}).FirstErr()
 	if err != nil {
 		log.Printf("kafka producer send failed topic=%s key=%s bytes=%d elapsed=%s: %v",

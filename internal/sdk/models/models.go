@@ -54,6 +54,22 @@ type UpdateUser struct {
 	Phone   *string `json:"phone"`
 }
 
+// PasswordResetToken represents a password reset token for a user
+type PasswordResetToken struct {
+	ID        string     `json:"id"`
+	UserID    string     `json:"user_id"`
+	Token     string     `json:"-"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	UsedAt    *time.Time `json:"used_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+type NewPasswordResetToken struct {
+	UserID    string
+	Token     string
+	ExpiresAt time.Time
+}
+
 // View maps a user to the view-service instance that holds their personal
 // read model. iam-service owns this directory so meeting events can be routed
 // to the correct per-user view instance.
@@ -70,22 +86,6 @@ type View struct {
 type NewView struct {
 	UserID string
 	URL    string
-}
-
-// PasswordResetToken represents a password reset token for a user
-type PasswordResetToken struct {
-	ID        string     `json:"id"`
-	UserID    string     `json:"user_id"`
-	Token     string     `json:"-"`
-	ExpiresAt time.Time  `json:"expires_at"`
-	UsedAt    *time.Time `json:"used_at,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-}
-
-type NewPasswordResetToken struct {
-	UserID    string
-	Token     string
-	ExpiresAt time.Time
 }
 
 type Liveness struct {

@@ -139,10 +139,11 @@ func (a *App) HandleRegister(c *gin.Context) {
 		OccurredAt: time.Now().UTC(),
 	}
 	if a.kafka != nil {
+		headers := kafkaCorrelationHeader(c, createdUser.ID)
 		go func() {
 			produceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := a.kafka.Produce(produceCtx, kafka.ProduceTopicUserCreated, []byte(createdUser.ID), event); err != nil {
+			if err := a.kafka.Produce(produceCtx, kafka.ProduceTopicUserCreated, []byte(createdUser.ID), event, headers...); err != nil {
 				a.toSentry(c, "register", "kafka", sentry.LevelError, err)
 			}
 		}()

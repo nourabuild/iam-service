@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
+	"github.com/nourabuild/iam-service/internal/services/kafka"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
 )
 
@@ -30,6 +31,18 @@ func (a *App) storeRefreshToken(ctx context.Context, userID, refreshToken string
 		ExpiresAt: expiresAt,
 	})
 	return err
+}
+
+// =============================================================================
+func kafkaCorrelationHeader(c *gin.Context, fallback string) []kafka.RecordHeader {
+	correlationID := c.GetHeader("X-Request-ID")
+	if correlationID == "" {
+		correlationID = fallback
+	}
+	if correlationID == "" {
+		return nil
+	}
+	return []kafka.RecordHeader{kafka.CorrelationIDHeader(correlationID)}
 }
 
 // =============================================================================

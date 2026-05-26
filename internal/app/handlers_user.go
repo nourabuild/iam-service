@@ -49,6 +49,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 	}
 
 	if a.kafka != nil {
+		headers := kafkaCorrelationHeader(c, user.ID)
 		_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
 			EventType:     "UserUpdated",
 			UserID:        user.ID,
@@ -62,7 +63,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 			AvatarPhotoID: user.AvatarPhotoID,
 			IsAdmin:       user.IsAdmin,
 			OccurredAt:    time.Now().UTC(),
-		})
+		}, headers...)
 	}
 
 	c.JSON(http.StatusOK, user)
@@ -140,6 +141,7 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 	}
 
 	if a.kafka != nil {
+		headers := kafkaCorrelationHeader(c, user.ID)
 		_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
 			EventType:     "UserUpdated",
 			UserID:        user.ID,
@@ -153,7 +155,7 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 			AvatarPhotoID: user.AvatarPhotoID,
 			IsAdmin:       user.IsAdmin,
 			OccurredAt:    time.Now().UTC(),
-		})
+		}, headers...)
 	}
 
 	c.JSON(http.StatusOK, user)
@@ -178,6 +180,7 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 	}
 
 	if a.kafka != nil {
+		headers := kafkaCorrelationHeader(c, user.ID)
 		_ = a.kafka.Produce(c.Request.Context(), kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
 			EventType:     "UserUpdated",
 			UserID:        user.ID,
@@ -191,7 +194,7 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 			AvatarPhotoID: user.AvatarPhotoID,
 			IsAdmin:       user.IsAdmin,
 			OccurredAt:    time.Now().UTC(),
-		})
+		}, headers...)
 	}
 
 	c.JSON(http.StatusOK, user)
