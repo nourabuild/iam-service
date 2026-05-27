@@ -50,7 +50,10 @@ func run(logger *slog.Logger) error {
 	defer sentryService.Close()
 
 	// 5. Initialize JWT service
-	jwtService := jwt.NewTokenService()
+	jwtService, err := jwt.NewTokenService()
+	if err != nil {
+		return fmt.Errorf("init jwt: %w", err)
+	}
 
 	// 6. Initialize Mailtrap service
 	emailService := mailtrap.NewMailtrapService()

@@ -20,6 +20,11 @@ var (
 	ErrTokenNotYetValid = errors.New("token_not_yet_valid")
 )
 
+// minSecretLength is the minimum acceptable length, in bytes, for an HMAC-SHA256
+// signing key. NIST SP 800-107 recommends the key be at least as long as the
+// hash output (32 bytes for SHA-256).
+const minSecretLength = 32
+
 type Claims struct {
 	IsAdmin bool `json:"is_admin"`
 	jwt.RegisteredClaims
@@ -44,34 +49,49 @@ type TokenService struct {
 	Parser                *jwt.Parser
 }
 
-func NewTokenService() *TokenService {
-	// 1. Read config from environment variables (fall back to dev defaults).
-	issuer := envOrDefault("JWT_ISSUER", "your-app-name")
-	accessSecret := envOrDefault("JWT_ACCESS_TOKEN_SECRET", "your-access-token-secret")
-	refreshSecret := envOrDefault("JWT_REFRESH_TOKEN_SECRET", "your-refresh-token-secret")
+// NewTokenService constructs a TokenService from required environment variables.
+// It returns an error (rather than silently falling back to predictable defaults)
+// if any required secret is missing or too short — those are conditions the
+// service must refuse to start under, since they make JWT forgery trivial.
+func NewTokenService() (*TokenService, error) {
+	issuer := strings.TrimSpace(os.Getenv("JWT_ISSUER"))
+	if issuer == "" {
+		return nil, errors.New("jwt: JWT_ISSUER is required")
+	}
 
-	// 2. Build the service with separate secrets for access vs refresh tokens.
+	accessSecret, err := loadSecret("JWT_ACCESS_TOKEN_SECRET")
+	if err != nil {
+		return nil, err
+	}
+	refreshSecret, err := loadSecret("JWT_REFRESH_TOKEN_SECRET")
+	if err != nil {
+		return nil, err
+	}
+
 	return &TokenService{
-		AccessTokenSecretKey:  []byte(accessSecret),
-		RefreshTokenSecretKey: []byte(refreshSecret),
+		AccessTokenSecretKey:  accessSecret,
+		RefreshTokenSecretKey: refreshSecret,
 		AccessTokenExpiry:     15 * time.Minute,
 		RefreshTokenExpiry:    30 * 24 * time.Hour,
 		Issuer:                issuer,
-		// 3. Pre-configure the parser with security options shared by all parse calls.
 		Parser: jwt.NewParser(
 			jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
 			jwt.WithExpirationRequired(),
 			jwt.WithStrictDecoding(),
 			jwt.WithIssuer(issuer),
 		),
-	}
+	}, nil
 }
 
-func envOrDefault(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
+func loadSecret(key string) ([]byte, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return nil, fmt.Errorf("jwt: %s is required", key)
 	}
-	return fallback
+	if len(value) < minSecretLength {
+		return nil, fmt.Errorf("jwt: %s must be at least %d bytes (got %d)", key, minSecretLength, len(value))
+	}
+	return []byte(value), nil
 }
 
 // GenerateTokens creates a new access and refresh token pair.

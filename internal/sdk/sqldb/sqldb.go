@@ -489,9 +489,12 @@ func (s *service) CreateRefreshToken(ctx context.Context, newRefreshToken models
 		RETURNING id::text, user_id::text, token, expires_at, revoked_at, created_at, updated_at
 	`
 
+	// Store only the hash of the bearer token. The plaintext is returned to the
+	// client once at issuance and never persisted, so a DB compromise alone
+	// cannot be used to authenticate as a user.
 	refreshToken, err := scanRefreshToken(s.db.QueryRowContext(ctx, query,
 		newRefreshToken.UserID,
-		newRefreshToken.Token,
+		hashTokenBytes(newRefreshToken.Token),
 		newRefreshToken.ExpiresAt,
 	))
 
@@ -520,7 +523,9 @@ func (s *service) GetRefreshTokenByToken(ctx context.Context, token []byte) (mod
 		WHERE token = $1
 	`
 
-	refreshToken, err := scanRefreshToken(s.db.QueryRowContext(ctx, query, token))
+	// Callers pass the plaintext bearer token; we look up by its SHA-256 hash
+	// because that's what's stored.
+	refreshToken, err := scanRefreshToken(s.db.QueryRowContext(ctx, query, hashTokenBytes(token)))
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -601,9 +606,11 @@ func (s *service) CreatePasswordResetToken(ctx context.Context, newToken models.
 	`
 
 	var token models.PasswordResetToken
+	// Only the hash is persisted; the plaintext is emailed to the user and
+	// then thrown away. See refresh-token rationale above.
 	err := s.db.QueryRowContext(ctx, query,
 		newToken.UserID,
-		newToken.Token,
+		hashTokenString(newToken.Token),
 		newToken.ExpiresAt,
 	).Scan(
 		&token.ID,
@@ -641,7 +648,7 @@ func (s *service) GetPasswordResetToken(ctx context.Context, token string) (mode
 	`
 
 	var resetToken models.PasswordResetToken
-	err := s.db.QueryRowContext(ctx, query, token).Scan(
+	err := s.db.QueryRowContext(ctx, query, hashTokenString(token)).Scan(
 		&resetToken.ID,
 		&resetToken.UserID,
 		&resetToken.Token,

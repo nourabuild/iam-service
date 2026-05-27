@@ -243,7 +243,16 @@ func (a *App) HandleRefresh(c *gin.Context) {
 		return
 	}
 
+	// Reuse detection: if a token that was already rotated (revoked) shows up
+	// again, treat it as evidence of theft. Burn every refresh token for this
+	// user so both the attacker and the legitimate client are forced back
+	// through full authentication.
 	if storedToken.RevokedAt != nil {
+		if delErr := a.db.DeleteRefreshTokensByUserID(c.Request.Context(), storedToken.UserID); delErr != nil {
+			a.toSentry(c, "refresh", "db_revoke_all", sentry.LevelError, delErr)
+		}
+		a.toSentry(c, "refresh", "reuse_detected", sentry.LevelWarning,
+			errors.New("revoked refresh token replayed"))
 		writeError(c, http.StatusUnauthorized, "invalid_token", nil)
 		return
 	}
@@ -253,14 +262,27 @@ func (a *App) HandleRefresh(c *gin.Context) {
 		return
 	}
 
-	accessToken, err := a.jwt.GenerateAccessToken(c.Request.Context(), claims.Subject, claims.IsAdmin)
+	// Rotate: issue a fresh (access, refresh) pair and retire the presented one.
+	newAccess, newRefresh, err := a.jwt.GenerateTokens(c.Request.Context(), claims.Subject, claims.IsAdmin)
 	if err != nil {
 		a.toSentry(c, "refresh", "jwt_generate", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
-	c.JSON(http.StatusOK, TokenResponse{AccessToken: accessToken, RefreshToken: req.RefreshToken})
+	if err := a.storeRefreshToken(c.Request.Context(), storedToken.UserID, newRefresh, authRefreshTTL); err != nil {
+		a.toSentry(c, "refresh", "db_token", sentry.LevelError, err)
+		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
+		return
+	}
+
+	if err := a.db.RevokeRefreshToken(c.Request.Context(), storedToken.ID); err != nil {
+		// Old token survived as un-revoked: surface for ops but don't fail the
+		// request — the new token is already issued and stored.
+		a.toSentry(c, "refresh", "db_revoke", sentry.LevelWarning, err)
+	}
+
+	c.JSON(http.StatusOK, TokenResponse{AccessToken: newAccess, RefreshToken: newRefresh})
 }
 
 func validateRegisterInput(req models.NewUser) (string, map[string]string) {
@@ -398,61 +420,55 @@ type ResetPasswordRequest struct {
 	PasswordConfirm string `json:"password_confirm" binding:"required"`
 }
 
-// HandleForgotPassword handles password reset requests
+// HandleForgotPassword handles password reset requests.
+//
+// The response body is intentionally identical for "user exists" and "user
+// does not exist" — including on internal failures — so the endpoint cannot
+// be used to probe for registered emails. Operational failures are reported
+// to Sentry instead of the client.
 func (a *App) HandleForgotPassword(c *gin.Context) {
+	const genericMessage = "If the email exists, a password reset link has been sent"
+	respondGeneric := func() {
+		c.JSON(http.StatusOK, gin.H{"message": genericMessage})
+	}
+
 	var req ForgotPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
 	}
 
-	// Get user by email
 	user, err := a.db.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil {
-		if errors.Is(err, sqldb.ErrDBNotFound) {
-			// Don't reveal if email exists or not (security best practice)
-			// Return success even if user not found
-			c.JSON(http.StatusOK, gin.H{
-				"message": "If the email exists, a password reset link has been sent",
-			})
-			return
+		if !errors.Is(err, sqldb.ErrDBNotFound) {
+			a.toSentry(c, "forgot_password", "db", sentry.LevelError, err)
 		}
-		a.toSentry(c, "forgot_password", "db", sentry.LevelError, err)
-		writeError(c, http.StatusInternalServerError, "internal_create_reset_token_error", nil)
+		respondGeneric()
 		return
 	}
 
-	// Generate secure random token
 	token, err := generateSecureToken(resetTokenLength)
 	if err != nil {
 		a.toSentry(c, "forgot_password", "token_generation", sentry.LevelError, err)
-		writeError(c, http.StatusInternalServerError, "internal_create_reset_token_error", nil)
+		respondGeneric()
 		return
 	}
 
-	// Create password reset token in database
-	_, err = a.db.CreatePasswordResetToken(c.Request.Context(), models.NewPasswordResetToken{
+	if _, err := a.db.CreatePasswordResetToken(c.Request.Context(), models.NewPasswordResetToken{
 		UserID:    user.ID,
 		Token:     token,
 		ExpiresAt: time.Now().Add(resetTokenTTL),
-	})
-	if err != nil {
+	}); err != nil {
 		a.toSentry(c, "forgot_password", "db", sentry.LevelError, err)
-		writeError(c, http.StatusInternalServerError, "internal_create_reset_token_error", nil)
+		respondGeneric()
 		return
 	}
 
-	// Send password reset email
-	err = a.mailtrap.SendPasswordResetEmail(user.Email, token)
-	if err != nil {
+	if err := a.mailtrap.SendPasswordResetEmail(user.Email, token); err != nil {
 		a.toSentry(c, "forgot_password", "email", sentry.LevelError, err)
-		writeError(c, http.StatusInternalServerError, "internal_send_reset_email_error", nil)
-		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "If the email exists, a password reset link has been sent",
-	})
+	respondGeneric()
 }
 
 // HandleResetPassword handles password reset with token

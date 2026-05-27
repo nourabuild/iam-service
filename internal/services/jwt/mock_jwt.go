@@ -48,7 +48,9 @@ func (m *mockTokenService) ParseRefreshToken(ctx context.Context, tokenString st
 		return nil, errors.New("error parsing refresh token")
 	case "jwt_generate_access_error_token":
 		claims := &Claims{}
-		claims.Subject = "jwt_generate_access_error"
+		// Refresh rotation now calls GenerateTokens, not GenerateAccessToken.
+		// Map this fixture onto the GenerateTokens error path.
+		claims.Subject = "jwt_generate_tokens_error"
 		return claims, nil
 	default:
 		claims := &Claims{}
