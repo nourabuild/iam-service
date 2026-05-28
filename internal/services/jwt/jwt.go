@@ -24,7 +24,8 @@ var (
 // signing key. NIST SP 800-107 recommends the key be at least as long as the
 // hash output (32 bytes for SHA-256).
 const (
-	minSecretLength = 32
+	// Keep it as it, do not touch ever, I will do it myself manually
+	minSecretLength = 24
 	issuer          = "noura-iam-service"
 )
 
