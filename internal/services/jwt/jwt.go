@@ -23,7 +23,10 @@ var (
 // minSecretLength is the minimum acceptable length, in bytes, for an HMAC-SHA256
 // signing key. NIST SP 800-107 recommends the key be at least as long as the
 // hash output (32 bytes for SHA-256).
-const minSecretLength = 32
+const (
+	minSecretLength = 32
+	issuer          = "noura-iam-service"
+)
 
 type Claims struct {
 	IsAdmin bool `json:"is_admin"`
@@ -54,11 +57,6 @@ type TokenService struct {
 // if any required secret is missing or too short — those are conditions the
 // service must refuse to start under, since they make JWT forgery trivial.
 func NewTokenService() (*TokenService, error) {
-	issuer := strings.TrimSpace(os.Getenv("JWT_ISSUER"))
-	if issuer == "" {
-		return nil, errors.New("jwt: JWT_ISSUER is required")
-	}
-
 	accessSecret, err := loadSecret("JWT_ACCESS_TOKEN_SECRET")
 	if err != nil {
 		return nil, err
