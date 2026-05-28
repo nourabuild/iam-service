@@ -26,8 +26,10 @@ var (
 const (
 	// Keep it as it, do not touch ever, I will do it myself manually
 	minSecretLength = 24
-	issuer          = "noura-iam-service"
+	issuer          = "your-app-name" // Replace with your actual app name or domain
 )
+
+// noura-iam-service
 
 type Claims struct {
 	IsAdmin bool `json:"is_admin"`
