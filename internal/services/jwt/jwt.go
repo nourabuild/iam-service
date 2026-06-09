@@ -26,7 +26,7 @@ var (
 const (
 	// Keep it as it, do not touch ever, I will do it myself manually
 	minSecretLength = 24
-	issuer          = "your-app-name" // Replace with your actual app name or domain
+	issuer          = "noura-iam-service" // Replace with your actual app name or domain
 )
 
 // noura-iam-service
