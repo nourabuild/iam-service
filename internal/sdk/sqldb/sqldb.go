@@ -46,20 +46,22 @@ type Service interface {
 	// It returns an error if the connection cannot be closed.
 	Close() error
 
-	// User operations
+	// User operations. Mutations take an optional OutboxEventFunc: when
+	// non-nil, the message it builds from the resulting row is written to
+	// auth.outbox in the same transaction as the mutation (see outbox.go).
 	GetUserByID(ctx context.Context, userID string) (models.User, error)
 	GetUserByEmail(ctx context.Context, email string) (models.User, error)
 	GetUserByAccount(ctx context.Context, account string) (models.User, error)
-	CreateUser(ctx context.Context, user models.NewUser) (models.User, error)
+	CreateUser(ctx context.Context, user models.NewUser, eventFn OutboxEventFunc) (models.User, error)
 	ListUsers(ctx context.Context) ([]models.User, error)
-	UpdateUser(ctx context.Context, userID string, update models.UpdateUser) (models.User, error)
-	PromoteUserToAdmin(ctx context.Context, userID string) (models.User, error)
-	DemoteUserFromAdmin(ctx context.Context, userID string) (models.User, error)
+	UpdateUser(ctx context.Context, userID string, update models.UpdateUser, eventFn OutboxEventFunc) (models.User, error)
+	PromoteUserToAdmin(ctx context.Context, userID string, eventFn OutboxEventFunc) (models.User, error)
+	DemoteUserFromAdmin(ctx context.Context, userID string, eventFn OutboxEventFunc) (models.User, error)
 
-	// View operations
-	// DO NOT USE THIS FOR ANYTHING AT ALL, NEVER EVER, THIS IS JUST A PLACEHOLDER! AGAIN DO NOT ENGAGE!
-	CreateView(ctx context.Context, view models.NewView) (models.View, error)
-	GetViewByUserID(ctx context.Context, userID string) (models.View, error)
+	// Outbox operations (used by the relay; see internal/app RunOutboxRelay)
+	FetchUnpublishedOutbox(ctx context.Context, limit int) ([]models.OutboxRow, error)
+	MarkOutboxPublished(ctx context.Context, ids []int64) error
+	DeletePublishedOutbox(ctx context.Context, olderThan time.Duration) error
 
 	// Refresh token operations
 	CreateRefreshToken(ctx context.Context, token models.NewRefreshToken) (models.RefreshToken, error)
@@ -70,8 +72,7 @@ type Service interface {
 
 	// Password reset token operations
 	CreatePasswordResetToken(ctx context.Context, token models.NewPasswordResetToken) (models.PasswordResetToken, error)
-	GetPasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error)
-	MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID string) error
+	ConsumePasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error)
 	DeleteExpiredPasswordResetTokens(ctx context.Context) error
 
 	// Password operations
@@ -79,33 +80,59 @@ type Service interface {
 }
 
 type service struct {
-	db *sql.DB
+	db       *sql.DB
+	database string
 }
 
-var (
-	database   = os.Getenv("BLUEPRINT_DB_DATABASE")
-	password   = os.Getenv("BLUEPRINT_DB_PASSWORD")
-	username   = os.Getenv("BLUEPRINT_DB_USERNAME")
-	port       = os.Getenv("BLUEPRINT_DB_PORT")
-	host       = os.Getenv("BLUEPRINT_DB_HOST")
-	schema     = os.Getenv("BLUEPRINT_DB_SCHEMA")
-	dbInstance *service
-)
+var dbInstance *service
 
-func New() Service {
+func New() (Service, error) {
 	// Reuse Connection
 	if dbInstance != nil {
-		return dbInstance
+		return dbInstance, nil
 	}
-	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable&search_path=%s", username, password, host, port, database, schema)
+
+	var (
+		database = os.Getenv("BLUEPRINT_DB_DATABASE")
+		password = os.Getenv("BLUEPRINT_DB_PASSWORD")
+		username = os.Getenv("BLUEPRINT_DB_USERNAME")
+		port     = os.Getenv("BLUEPRINT_DB_PORT")
+		host     = os.Getenv("BLUEPRINT_DB_HOST")
+		schema   = os.Getenv("BLUEPRINT_DB_SCHEMA")
+		sslmode  = os.Getenv("BLUEPRINT_DB_SSLMODE")
+	)
+	if sslmode == "" {
+		sslmode = "disable" // local-dev default; set to "require" or stricter in deployed environments
+	}
+
+	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s&search_path=%s",
+		username, password, host, port, database, sslmode, schema)
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("opening database: %w", err)
 	}
+
+	// Bound the pool so a traffic spike queues here instead of exhausting
+	// Postgres connections.
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
+	// Fail fast on bad credentials or an unreachable host rather than
+	// surfacing the problem on the first query.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("pinging database %q at %s:%s: %w", database, host, port, err)
+	}
+
 	dbInstance = &service{
-		db: db,
+		db:       db,
+		database: database,
 	}
-	return dbInstance
+	return dbInstance, nil
 }
 
 // Health checks the health of the database connection by pinging the database.
@@ -168,7 +195,7 @@ func (s *service) Health() map[string]string {
 // If the connection is successfully closed, it returns nil.
 // If an error occurs while closing the connection, it returns the error.
 func (s *service) Close() error {
-	log.Printf("Disconnected from database: %s", database)
+	log.Printf("Disconnected from database: %s", s.database)
 	return s.db.Close()
 }
 
@@ -273,30 +300,30 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (models.
 }
 
 // CreateUser inserts a new user into the database.
-func (s *service) CreateUser(ctx context.Context, newUser models.NewUser) (models.User, error) {
-	const query = `
-		INSERT INTO auth.users (name, account, email, password, is_admin)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
-	`
+func (s *service) CreateUser(ctx context.Context, newUser models.NewUser, eventFn OutboxEventFunc) (models.User, error) {
+	return s.mutateWithOutbox(ctx, eventFn, func(q querier) (models.User, error) {
+		const query = `
+			INSERT INTO auth.users (name, account, email, password, is_admin)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
+		`
 
-	user, err := scanUser(s.db.QueryRowContext(ctx, query,
-		newUser.Name,
-		newUser.Account,
-		newUser.Email,
-		newUser.Password,
-		false, // is_admin defaults to false
-	))
-
-	if err != nil {
-		if isPgError(err, uniqueViolation) {
-			return models.User{}, ErrDBDuplicatedEntry
+		user, err := scanUser(q.QueryRowContext(ctx, query,
+			newUser.Name,
+			newUser.Account,
+			newUser.Email,
+			newUser.Password,
+			false, // is_admin defaults to false
+		))
+		if err != nil {
+			if isPgError(err, uniqueViolation) {
+				return models.User{}, ErrDBDuplicatedEntry
+			}
+			return models.User{}, fmt.Errorf("creating user: %w", err)
 		}
-		log.Printf("DEBUG CreateUser error: %v", err)
-		return models.User{}, fmt.Errorf("creating user: %w", err)
-	}
 
-	return user, nil
+		return user, nil
+	})
 }
 
 // ListUsers retrieves all users from the database.
@@ -343,138 +370,74 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 }
 
 // UpdateUser updates a user's profile fields.
-func (s *service) UpdateUser(ctx context.Context, userID string, update models.UpdateUser) (models.User, error) {
-	const query = `
-		UPDATE auth.users
-		SET name    = $1,
-		    account = $2,
-		    bio     = $3,
-		    dob     = $4,
-		    city    = $5,
-		    phone   = $6,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $7
-		RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
-	`
+func (s *service) UpdateUser(ctx context.Context, userID string, update models.UpdateUser, eventFn OutboxEventFunc) (models.User, error) {
+	return s.mutateWithOutbox(ctx, eventFn, func(q querier) (models.User, error) {
+		const query = `
+			UPDATE auth.users
+			SET name    = $1,
+			    account = $2,
+			    bio     = $3,
+			    dob     = $4,
+			    city    = $5,
+			    phone   = $6,
+			    updated_at = CURRENT_TIMESTAMP
+			WHERE id = $7
+			RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
+		`
 
-	user, err := scanUser(s.db.QueryRowContext(ctx, query,
-		update.Name,
-		update.Account,
-		update.Bio,
-		update.DOB,
-		update.City,
-		update.Phone,
-		userID,
-	))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.User{}, ErrDBNotFound
+		user, err := scanUser(q.QueryRowContext(ctx, query,
+			update.Name,
+			update.Account,
+			update.Bio,
+			update.DOB,
+			update.City,
+			update.Phone,
+			userID,
+		))
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return models.User{}, ErrDBNotFound
+			}
+			if isPgError(err, uniqueViolation) {
+				return models.User{}, ErrDBDuplicatedEntry
+			}
+			return models.User{}, fmt.Errorf("updating user: %w", err)
 		}
-		if isPgError(err, uniqueViolation) {
-			return models.User{}, ErrDBDuplicatedEntry
-		}
-		return models.User{}, fmt.Errorf("updating user: %w", err)
-	}
 
-	return user, nil
+		return user, nil
+	})
 }
 
 // PromoteUserToAdmin sets the is_admin flag to true for a specific user.
-func (s *service) PromoteUserToAdmin(ctx context.Context, userID string) (models.User, error) {
-	const query = `
-		UPDATE auth.users
-		SET is_admin = true,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-		RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
-	`
-
-	user, err := scanUser(s.db.QueryRowContext(ctx, query, userID))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.User{}, ErrDBNotFound
-		}
-		return models.User{}, fmt.Errorf("promoting user to admin: %w", err)
-	}
-
-	return user, nil
+func (s *service) PromoteUserToAdmin(ctx context.Context, userID string, eventFn OutboxEventFunc) (models.User, error) {
+	return s.setAdminFlag(ctx, userID, true, eventFn)
 }
 
 // DemoteUserFromAdmin sets the is_admin flag to false for a specific user.
-func (s *service) DemoteUserFromAdmin(ctx context.Context, userID string) (models.User, error) {
-	const query = `
-		UPDATE auth.users
-		SET is_admin = false,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-		RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
-	`
-
-	user, err := scanUser(s.db.QueryRowContext(ctx, query, userID))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.User{}, ErrDBNotFound
-		}
-		return models.User{}, fmt.Errorf("demoting user from admin: %w", err)
-	}
-
-	return user, nil
+func (s *service) DemoteUserFromAdmin(ctx context.Context, userID string, eventFn OutboxEventFunc) (models.User, error) {
+	return s.setAdminFlag(ctx, userID, false, eventFn)
 }
 
-// ---------------------------------------------
-// View Operations
-// ---------------------------------------------
+func (s *service) setAdminFlag(ctx context.Context, userID string, isAdmin bool, eventFn OutboxEventFunc) (models.User, error) {
+	return s.mutateWithOutbox(ctx, eventFn, func(q querier) (models.User, error) {
+		const query = `
+			UPDATE auth.users
+			SET is_admin = $1,
+			    updated_at = CURRENT_TIMESTAMP
+			WHERE id = $2
+			RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
+		`
 
-// CreateView maps a user to the view-service instance that holds their
-// personal read model.
-// DO NOT USE THIS FOR ANYTHING AT ALL, NEVER EVER, THIS IS JUST A PLACEHOLDER! AGAIN DO NOT ENGAGE!
-func (s *service) CreateView(ctx context.Context, newView models.NewView) (models.View, error) {
-	const query = `
-		INSERT INTO auth.views (user_id, url)
-		VALUES ($1, $2)
-		RETURNING id::text, user_id::text, url, created_at, updated_at
-	`
-
-	view, err := scanView(s.db.QueryRowContext(ctx, query,
-		newView.UserID,
-		newView.URL,
-	))
-	if err != nil {
-		if isPgError(err, uniqueViolation) {
-			return models.View{}, ErrDBDuplicatedEntry
+		user, err := scanUser(q.QueryRowContext(ctx, query, isAdmin, userID))
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return models.User{}, ErrDBNotFound
+			}
+			return models.User{}, fmt.Errorf("setting admin flag: %w", err)
 		}
-		if isPgError(err, foreignKeyViolation) {
-			return models.View{}, ErrForeignKeyViolation
-		}
-		return models.View{}, fmt.Errorf("creating view: %w", err)
-	}
 
-	return view, nil
-}
-
-// GetViewByUserID retrieves the view mapping for a specific user.
-// DO NOT USE THIS FOR ANYTHING AT ALL, NEVER EVER, THIS IS JUST A PLACEHOLDER! AGAIN DO NOT ENGAGE!
-func (s *service) GetViewByUserID(ctx context.Context, userID string) (models.View, error) {
-	const query = `
-		SELECT
-			id::text,
-			user_id::text,
-			url,
-			created_at,
-			updated_at
-		FROM auth.views
-		WHERE user_id = $1
-	`
-
-	view, err := scanView(s.db.QueryRowContext(ctx, query, userID))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.View{}, ErrDBNotFound
-		}
-		return models.View{}, fmt.Errorf("selecting view by user id: %w", err)
-	}
-
-	return view, nil
+		return user, nil
+	})
 }
 
 // ---------------------------------------------
@@ -501,6 +464,9 @@ func (s *service) CreateRefreshToken(ctx context.Context, newRefreshToken models
 	if err != nil {
 		if isPgError(err, foreignKeyViolation) {
 			return models.RefreshToken{}, ErrForeignKeyViolation
+		}
+		if isPgError(err, uniqueViolation) {
+			return models.RefreshToken{}, ErrDBDuplicatedEntry
 		}
 		return models.RefreshToken{}, fmt.Errorf("creating refresh token: %w", err)
 	}
@@ -631,20 +597,18 @@ func (s *service) CreatePasswordResetToken(ctx context.Context, newToken models.
 	return token, nil
 }
 
-// GetPasswordResetToken retrieves a password reset token by its token value.
-func (s *service) GetPasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error) {
+// ConsumePasswordResetToken atomically redeems an unused, unexpired reset
+// token by stamping used_at in the same statement that looks it up. Two
+// concurrent requests presenting the same token can't both succeed: the
+// second UPDATE matches zero rows and gets ErrDBNotFound.
+func (s *service) ConsumePasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error) {
 	const query = `
-		SELECT
-			id::text,
-			user_id::text,
-			token,
-			expires_at,
-			used_at,
-			created_at
-		FROM auth.password_reset_tokens
+		UPDATE auth.password_reset_tokens
+		SET used_at = CURRENT_TIMESTAMP
 		WHERE token = $1
 		AND used_at IS NULL
 		AND expires_at > CURRENT_TIMESTAMP
+		RETURNING id::text, user_id::text, token, expires_at, used_at, created_at
 	`
 
 	var resetToken models.PasswordResetToken
@@ -661,35 +625,10 @@ func (s *service) GetPasswordResetToken(ctx context.Context, token string) (mode
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.PasswordResetToken{}, ErrDBNotFound
 		}
-		return models.PasswordResetToken{}, fmt.Errorf("getting password reset token: %w", err)
+		return models.PasswordResetToken{}, fmt.Errorf("consuming password reset token: %w", err)
 	}
 
 	return resetToken, nil
-}
-
-// MarkPasswordResetTokenAsUsed marks a password reset token as used.
-func (s *service) MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID string) error {
-	const query = `
-		UPDATE auth.password_reset_tokens
-		SET used_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-	`
-
-	result, err := s.db.ExecContext(ctx, query, tokenID)
-	if err != nil {
-		return fmt.Errorf("marking password reset token as used: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("checking rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return ErrDBNotFound
-	}
-
-	return nil
 }
 
 // DeleteExpiredPasswordResetTokens removes all expired or used password reset tokens.
@@ -774,21 +713,6 @@ func scanUser(scanner rowScanner) (models.User, error) {
 	user.AvatarPhotoID = Int32Ptr(avatarPhotoID)
 
 	return user, nil
-}
-
-func scanView(scanner rowScanner) (models.View, error) {
-	var view models.View
-	if err := scanner.Scan(
-		&view.ID,
-		&view.UserID,
-		&view.URL,
-		&view.CreatedAt,
-		&view.UpdatedAt,
-	); err != nil {
-		return models.View{}, err
-	}
-
-	return view, nil
 }
 
 func scanRefreshToken(scanner rowScanner) (models.RefreshToken, error) {

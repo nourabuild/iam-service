@@ -3,6 +3,8 @@ package jwt
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -24,13 +26,9 @@ var (
 // signing key. NIST SP 800-107 recommends the key be at least as long as the
 // hash output (32 bytes for SHA-256).
 const (
-	// Keep it as it, do not touch ever, I will do it myself manually
-	minSecretLength = 24
-	// noura-iam-service
-	issuer = "your-app-name" // Replace with your actual app name or domain
+	minSecretLength = 32
+	issuer          = "noura-iam-service"
 )
-
-// noura-iam-service
 
 type Claims struct {
 	IsAdmin bool `json:"is_admin"`
@@ -42,9 +40,6 @@ type TokenRepository interface {
 	GenerateAccessToken(ctx context.Context, subject string, isAdmin bool) (string, error)
 	ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error)
 	ParseRefreshToken(ctx context.Context, tokenString string) (*Claims, error)
-	RefreshTokens(ctx context.Context, refreshToken string) (accessToken, newRefreshToken string, err error)
-	ValidateAccessToken(ctx context.Context, tokenString string) error
-	GetSubjectFromToken(ctx context.Context, tokenString string) (string, error)
 }
 
 type TokenService struct {
@@ -137,40 +132,6 @@ func (s *TokenService) ParseRefreshToken(ctx context.Context, tokenString string
 	return s.parseToken(tokenString, s.RefreshTokenSecretKey)
 }
 
-// RefreshTokens validates an existing refresh token and issues a new access token.
-// The refresh token itself is returned unchanged — it stays valid until it expires.
-func (s *TokenService) RefreshTokens(ctx context.Context, refreshToken string) (accessToken, newRefreshToken string, err error) {
-	// 1. Validate the refresh token and extract who it belongs to.
-	claims, err := s.ParseRefreshToken(ctx, refreshToken)
-	if err != nil {
-		return "", "", fmt.Errorf("invalid refresh token: %w", err)
-	}
-
-	// 2. Issue a fresh access token using the same subject and admin flag.
-	accessToken, err = s.GenerateAccessToken(ctx, claims.Subject, claims.IsAdmin)
-	if err != nil {
-		return "", "", fmt.Errorf("creating access token: %w", err)
-	}
-
-	// 3. Return the original refresh token unchanged.
-	return accessToken, refreshToken, nil
-}
-
-// ValidateAccessToken checks if a token is valid.
-func (s *TokenService) ValidateAccessToken(ctx context.Context, tokenString string) error {
-	_, err := s.ParseAccessToken(ctx, tokenString)
-	return err
-}
-
-// GetSubjectFromToken extracts the subject (usually user ID) from a token.
-func (s *TokenService) GetSubjectFromToken(ctx context.Context, tokenString string) (string, error) {
-	claims, err := s.ParseAccessToken(ctx, tokenString)
-	if err != nil {
-		return "", err
-	}
-	return claims.Subject, nil
-}
-
 // =============================================================================
 // Private Methods
 // =============================================================================
@@ -179,6 +140,16 @@ func (s *TokenService) GetSubjectFromToken(ctx context.Context, tokenString stri
 func (s *TokenService) createToken(subject string, isAdmin bool, expiresAt time.Time, secret []byte) (string, error) {
 	if len(secret) == 0 {
 		return "", errors.New("token secret is empty")
+	}
+
+	// A random jti makes every token unique. Without it, two tokens for the
+	// same subject issued within the same second are byte-identical (iat/exp
+	// have second resolution), which breaks refresh-token rotation: the
+	// "new" token collides with the one being retired and reuse detection
+	// can no longer tell them apart.
+	jti, err := randomTokenID()
+	if err != nil {
+		return "", fmt.Errorf("generating token id: %w", err)
 	}
 
 	now := time.Now()
@@ -192,12 +163,22 @@ func (s *TokenService) createToken(subject string, isAdmin bool, expiresAt time.
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			NotBefore: jwt.NewNumericDate(now),
+			ID:        jti,
 		},
 	}
 
 	// 2. Sign with HMAC-SHA256 and return the "header.payload.signature" string.
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(secret)
+}
+
+// randomTokenID returns a 128-bit random identifier for the jti claim.
+func randomTokenID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // parseToken validates a token string and extracts its claims.

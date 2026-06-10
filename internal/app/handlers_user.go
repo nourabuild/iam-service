@@ -15,6 +15,32 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// userUpdatedOutbox builds the outbox event announcing a user's new state,
+// written transactionally with the mutation that produced it.
+func userUpdatedOutbox(requestID string) sqldb.OutboxEventFunc {
+	return func(user models.User) *models.OutboxMessage {
+		return &models.OutboxMessage{
+			Topic: kafka.ProduceTopicUserUpdated,
+			Key:   user.ID,
+			Payload: models.UserUpdatedEvent{
+				EventType:     "UserUpdated",
+				UserID:        user.ID,
+				Name:          user.Name,
+				Email:         user.Email,
+				Account:       user.Account,
+				Bio:           user.Bio,
+				DOB:           user.DOB,
+				City:          user.City,
+				Phone:         user.Phone,
+				AvatarPhotoID: user.AvatarPhotoID,
+				IsAdmin:       user.IsAdmin,
+				OccurredAt:    time.Now().UTC(),
+			},
+			Headers: outboxHeaders(requestID, user.ID),
+		}
+	}
+}
+
 func (a *App) HandleUpdateAccount(c *gin.Context) {
 	ctx := c.Request.Context()
 	userID, err := middleware.GetUserID(c)
@@ -37,7 +63,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 		return
 	}
 
-	user, err := a.db.UpdateUser(c.Request.Context(), userID, req)
+	user, err := a.db.UpdateUser(ctx, userID, req, userUpdatedOutbox(c.GetHeader("X-Request-ID")))
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
 			writeError(c, http.StatusConflict, "account_already_taken", nil)
@@ -46,24 +72,6 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 		a.toSentry(c, "update_account", "db", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_update_account_error", nil)
 		return
-	}
-
-	if a.kafka != nil {
-		headers := kafkaCorrelationHeader(c, user.ID)
-		_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
-			EventType:     "UserUpdated",
-			UserID:        user.ID,
-			Name:          user.Name,
-			Email:         user.Email,
-			Account:       user.Account,
-			Bio:           user.Bio,
-			DOB:           user.DOB,
-			City:          user.City,
-			Phone:         user.Phone,
-			AvatarPhotoID: user.AvatarPhotoID,
-			IsAdmin:       user.IsAdmin,
-			OccurredAt:    time.Now().UTC(),
-		}, headers...)
 	}
 
 	c.JSON(http.StatusOK, user)
@@ -129,33 +137,16 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 		return
 	}
 
-	user, err := a.db.PromoteUserToAdmin(c.Request.Context(), userID)
+	user, err := a.db.PromoteUserToAdmin(ctx, userID, userUpdatedOutbox(c.GetHeader("X-Request-ID")))
 	if err != nil {
 		a.toSentry(c, "promote_user", "db", sentry.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
-			writeError(c, http.StatusUnauthorized, "user_not_found", nil)
+			// The *target* user doesn't exist; the caller's auth is fine.
+			writeError(c, http.StatusNotFound, "user_not_found", nil)
 			return
 		}
 		writeError(c, http.StatusInternalServerError, "internal_promote_user_error", nil)
 		return
-	}
-
-	if a.kafka != nil {
-		headers := kafkaCorrelationHeader(c, user.ID)
-		_ = a.kafka.Produce(ctx, kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
-			EventType:     "UserUpdated",
-			UserID:        user.ID,
-			Name:          user.Name,
-			Email:         user.Email,
-			Account:       user.Account,
-			Bio:           user.Bio,
-			DOB:           user.DOB,
-			City:          user.City,
-			Phone:         user.Phone,
-			AvatarPhotoID: user.AvatarPhotoID,
-			IsAdmin:       user.IsAdmin,
-			OccurredAt:    time.Now().UTC(),
-		}, headers...)
 	}
 
 	c.JSON(http.StatusOK, user)
@@ -168,33 +159,16 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 		return
 	}
 
-	user, err := a.db.DemoteUserFromAdmin(c.Request.Context(), userID)
+	user, err := a.db.DemoteUserFromAdmin(c.Request.Context(), userID, userUpdatedOutbox(c.GetHeader("X-Request-ID")))
 	if err != nil {
 		a.toSentry(c, "demote_user", "db", sentry.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
-			writeError(c, http.StatusUnauthorized, "user_not_found", nil)
+			// The *target* user doesn't exist; the caller's auth is fine.
+			writeError(c, http.StatusNotFound, "user_not_found", nil)
 			return
 		}
 		writeError(c, http.StatusInternalServerError, "internal_demote_user_error", nil)
 		return
-	}
-
-	if a.kafka != nil {
-		headers := kafkaCorrelationHeader(c, user.ID)
-		_ = a.kafka.Produce(c.Request.Context(), kafka.ProduceTopicUserUpdated, []byte(user.ID), models.UserUpdatedEvent{
-			EventType:     "UserUpdated",
-			UserID:        user.ID,
-			Name:          user.Name,
-			Email:         user.Email,
-			Account:       user.Account,
-			Bio:           user.Bio,
-			DOB:           user.DOB,
-			City:          user.City,
-			Phone:         user.Phone,
-			AvatarPhotoID: user.AvatarPhotoID,
-			IsAdmin:       user.IsAdmin,
-			OccurredAt:    time.Now().UTC(),
-		}, headers...)
 	}
 
 	c.JSON(http.StatusOK, user)
@@ -227,9 +201,10 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 		return
 	}
 
-	// Validate new passwords match
+	// Validate new passwords match. This is input validation, not an auth
+	// failure — a 401 here would trip frontend auto-logout interceptors.
 	if req.NewPassword != req.PasswordConfirm {
-		writeError(c, http.StatusUnauthorized, "password_mismatch", map[string]string{
+		writeError(c, http.StatusBadRequest, "password_mismatch", map[string]string{
 			"field": "password_confirm",
 		})
 		return
@@ -253,10 +228,11 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 		return
 	}
 
-	// Verify current password
+	// Verify current password. 400 rather than 401: the bearer token is
+	// valid, the user just mistyped — don't trigger client-side logout.
 	err = bcrypt.CompareHashAndPassword(user.Password, []byte(req.CurrentPassword))
 	if err != nil {
-		writeError(c, http.StatusUnauthorized, "password_mismatch", map[string]string{
+		writeError(c, http.StatusBadRequest, "password_mismatch", map[string]string{
 			"field": "current_password",
 		})
 		return

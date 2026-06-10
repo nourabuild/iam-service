@@ -73,8 +73,20 @@ func TestReadiness(t *testing.T) {
 
 	engine.ServeHTTP(rr, req)
 
-	if rr.Code != 200 {
+	if rr.Code != http.StatusOK {
 		t.Errorf("Expected status code. expected %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	var body map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshaling readiness body: %v", err)
+	}
+	if body["status"] != "up" {
+		t.Errorf("expected status up, got %q", body["status"])
+	}
+	// The mock producer is wired in setup_test.go, so Kafka reports enabled.
+	if body["kafka"] != "enabled" {
+		t.Errorf("expected kafka enabled, got %q", body["kafka"])
 	}
 }
 

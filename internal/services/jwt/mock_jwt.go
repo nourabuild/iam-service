@@ -27,11 +27,6 @@ func (m *mockTokenService) GenerateTokens(ctx context.Context, subject string, i
 	return "accessToken", "refreshToken", nil
 }
 
-// GetSubjectFromToken implements [TokenRepository].
-func (m *mockTokenService) GetSubjectFromToken(ctx context.Context, tokenString string) (string, error) {
-	panic("unimplemented")
-}
-
 // ParseAccessToken implements [TokenRepository].
 func (m *mockTokenService) ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error) {
 	panic("unimplemented")
@@ -59,12 +54,3 @@ func (m *mockTokenService) ParseRefreshToken(ctx context.Context, tokenString st
 	}
 }
 
-// RefreshTokens implements [TokenRepository].
-func (m *mockTokenService) RefreshTokens(ctx context.Context, refreshToken string) (accessToken string, newRefreshToken string, err error) {
-	panic("unimplemented")
-}
-
-// ValidateAccessToken implements [TokenRepository].
-func (m *mockTokenService) ValidateAccessToken(ctx context.Context, tokenString string) error {
-	panic("unimplemented")
-}

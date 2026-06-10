@@ -1,237 +1,236 @@
 package jwt
 
-// import (
-// 	"context"
-// 	"errors"
-// 	"os"
-// 	"strings"
-// 	"testing"
-// )
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+	"time"
 
-// const (
-// 	testIssuer        = "test-issuer"
-// 	testAccessSecret  = "test-access-secret"
-// 	testRefreshSecret = "test-refresh-secret"
-// )
+	gojwt "github.com/golang-jwt/jwt/v5"
+)
 
-// func TestMain(m *testing.M) {
-// 	_ = os.Setenv("JWT_ISSUER", testIssuer)
-// 	_ = os.Setenv("JWT_ACCESS_TOKEN_SECRET", testAccessSecret)
-// 	_ = os.Setenv("JWT_REFRESH_TOKEN_SECRET", testRefreshSecret)
+const (
+	testAccessSecret  = "test-access-secret-0123456789abcdef"
+	testRefreshSecret = "test-refresh-secret-0123456789abcdef"
+)
 
-// 	code := m.Run()
-// 	os.Exit(code)
-// }
+func TestMain(m *testing.M) {
+	_ = os.Setenv("JWT_ACCESS_TOKEN_SECRET", testAccessSecret)
+	_ = os.Setenv("JWT_REFRESH_TOKEN_SECRET", testRefreshSecret)
+	os.Exit(m.Run())
+}
 
-// func TestNewTokenService(t *testing.T) {
-// 	srv := NewTokenService()
-// 	if srv == nil {
-// 		t.Fatal("NewTokenService() returned nil")
-// 	}
-// 	if srv.Issuer != testIssuer {
-// 		t.Fatalf("expected issuer %q, got %q", testIssuer, srv.Issuer)
-// 	}
-// }
+func mustService(t *testing.T) *TokenService {
+	t.Helper()
+	svc, err := NewTokenService()
+	if err != nil {
+		t.Fatalf("NewTokenService() returned error: %v", err)
+	}
+	return svc
+}
 
-// func TestGenerateAccessToken(t *testing.T) {
-// 	t.Run("success", func(t *testing.T) {
-// 		srv := NewTokenService()
-// 		access, err := srv.GenerateAccessToken(context.Background(), "user-123", true)
-// 		if err != nil {
-// 			t.Fatalf("GenerateAccessToken returned error: %v", err)
-// 		}
-// 		if access == "" {
-// 			t.Fatal("expected non-empty access token")
-// 		}
-// 	})
+func TestNewTokenService(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		svc := mustService(t)
+		if svc.Issuer != issuer {
+			t.Fatalf("expected issuer %q, got %q", issuer, svc.Issuer)
+		}
+	})
 
-// 	t.Run("missing access secret", func(t *testing.T) {
-// 		srv := NewTokenService()
-// 		srv.AccessTokenSecretKey = nil
+	t.Run("missing access secret", func(t *testing.T) {
+		t.Setenv("JWT_ACCESS_TOKEN_SECRET", "")
+		if _, err := NewTokenService(); err == nil {
+			t.Fatal("expected error for missing access secret, got nil")
+		}
+	})
 
-// 		_, err := srv.GenerateAccessToken(context.Background(), "user-123", true)
-// 		if err == nil {
-// 			t.Fatal("expected error, got nil")
-// 		}
-// 		if !strings.Contains(err.Error(), "creating access token") {
-// 			t.Fatalf("expected wrapped create error, got %v", err)
-// 		}
-// 	})
-// }
+	t.Run("missing refresh secret", func(t *testing.T) {
+		t.Setenv("JWT_REFRESH_TOKEN_SECRET", "")
+		if _, err := NewTokenService(); err == nil {
+			t.Fatal("expected error for missing refresh secret, got nil")
+		}
+	})
 
-// func TestGenerateTokens(t *testing.T) {
-// 	t.Run("success", func(t *testing.T) {
-// 		srv := NewTokenService()
-// 		access, refresh, err := srv.GenerateTokens(context.Background(), "user-123", true)
-// 		if err != nil {
-// 			t.Fatalf("GenerateTokens returned error: %v", err)
-// 		}
-// 		if access == "" {
-// 			t.Fatal("expected non-empty access token")
-// 		}
-// 		if refresh == "" {
-// 			t.Fatal("expected non-empty refresh token")
-// 		}
-// 	})
+	t.Run("short secret rejected", func(t *testing.T) {
+		t.Setenv("JWT_ACCESS_TOKEN_SECRET", "too-short")
+		if _, err := NewTokenService(); err == nil {
+			t.Fatal("expected error for short secret, got nil")
+		}
+	})
 
-// 	t.Run("missing access secret", func(t *testing.T) {
-// 		srv := NewTokenService()
-// 		srv.AccessTokenSecretKey = nil
+	t.Run("whitespace-only secret rejected", func(t *testing.T) {
+		t.Setenv("JWT_ACCESS_TOKEN_SECRET", "                                        ")
+		if _, err := NewTokenService(); err == nil {
+			t.Fatal("expected error for whitespace secret, got nil")
+		}
+	})
+}
 
-// 		_, _, err := srv.GenerateTokens(context.Background(), "user-123", true)
-// 		if err == nil {
-// 			t.Fatal("expected error, got nil")
-// 		}
-// 		if !strings.Contains(err.Error(), "creating access token") {
-// 			t.Fatalf("expected access token create error, got %v", err)
-// 		}
-// 	})
+func TestGenerateAndParseRoundTrip(t *testing.T) {
+	svc := mustService(t)
+	ctx := context.Background()
 
-// 	t.Run("missing refresh secret", func(t *testing.T) {
-// 		srv := NewTokenService()
-// 		srv.RefreshTokenSecretKey = nil
+	access, refresh, err := svc.GenerateTokens(ctx, "user-123", true)
+	if err != nil {
+		t.Fatalf("GenerateTokens returned error: %v", err)
+	}
+	if access == "" || refresh == "" {
+		t.Fatal("expected non-empty token pair")
+	}
 
-// 		_, _, err := srv.GenerateTokens(context.Background(), "user-123", true)
-// 		if err == nil {
-// 			t.Fatal("expected error, got nil")
-// 		}
-// 		if !strings.Contains(err.Error(), "creating refresh token") {
-// 			t.Fatalf("expected refresh token create error, got %v", err)
-// 		}
-// 	})
-// }
+	claims, err := svc.ParseAccessToken(ctx, access)
+	if err != nil {
+		t.Fatalf("ParseAccessToken returned error: %v", err)
+	}
+	if claims.Subject != "user-123" {
+		t.Errorf("expected subject user-123, got %q", claims.Subject)
+	}
+	if !claims.IsAdmin {
+		t.Error("expected is_admin claim to be true")
+	}
+	if claims.Issuer != issuer {
+		t.Errorf("expected issuer %q, got %q", issuer, claims.Issuer)
+	}
 
-// func TestParseAccessToken(t *testing.T) {
-// 	t.Run("success", func(t *testing.T) {
-// 		srv := NewTokenService()
-// 		access, err := srv.GenerateAccessToken(context.Background(), "user-123", true)
-// 		if err != nil {
-// 			t.Fatalf("GenerateAccessToken returned error: %v", err)
-// 		}
+	refreshClaims, err := svc.ParseRefreshToken(ctx, refresh)
+	if err != nil {
+		t.Fatalf("ParseRefreshToken returned error: %v", err)
+	}
+	if refreshClaims.Subject != "user-123" {
+		t.Errorf("expected refresh subject user-123, got %q", refreshClaims.Subject)
+	}
+}
 
-// 		claims, err := srv.ParseAccessToken(context.Background(), access)
-// 		if err != nil {
-// 			t.Fatalf("ParseAccessToken returned error: %v", err)
-// 		}
-// 		if claims.Subject != "user-123" {
-// 			t.Fatalf("expected subject user-123, got %q", claims.Subject)
-// 		}
-// 		if !claims.IsAdmin {
-// 			t.Fatal("expected isAdmin=true")
-// 		}
-// 	})
+// TestTokensAreUnique is the regression test for same-second token collisions:
+// without a random jti, two tokens for the same subject issued within one
+// second are byte-identical, which silently breaks refresh-token rotation and
+// reuse detection.
+func TestTokensAreUnique(t *testing.T) {
+	svc := mustService(t)
+	ctx := context.Background()
 
-// 	t.Run("empty token", func(t *testing.T) {
-// 		srv := NewTokenService()
+	access1, refresh1, err := svc.GenerateTokens(ctx, "user-123", false)
+	if err != nil {
+		t.Fatalf("GenerateTokens returned error: %v", err)
+	}
+	access2, refresh2, err := svc.GenerateTokens(ctx, "user-123", false)
+	if err != nil {
+		t.Fatalf("GenerateTokens returned error: %v", err)
+	}
 
-// 		_, err := srv.ParseAccessToken(context.Background(), "")
-// 		if !errors.Is(err, ErrTokenNotFound) {
-// 			t.Fatalf("expected ErrTokenNotFound, got %v", err)
-// 		}
-// 	})
-// }
+	if access1 == access2 {
+		t.Error("two access tokens issued back-to-back are identical; jti missing?")
+	}
+	if refresh1 == refresh2 {
+		t.Error("two refresh tokens issued back-to-back are identical; jti missing?")
+	}
+}
 
-// func TestParseRefreshToken(t *testing.T) {
-// 	srv := NewTokenService()
-// 	_, refresh, err := srv.GenerateTokens(context.Background(), "user-123", true)
-// 	if err != nil {
-// 		t.Fatalf("GenerateTokens returned error: %v", err)
-// 	}
+func TestParseExpiredToken(t *testing.T) {
+	svc := mustService(t)
+	svc.AccessTokenExpiry = -time.Minute
 
-// 	claims, err := srv.ParseRefreshToken(context.Background(), refresh)
-// 	if err != nil {
-// 		t.Fatalf("ParseRefreshToken returned error: %v", err)
-// 	}
-// 	if claims.Subject != "user-123" {
-// 		t.Fatalf("expected subject user-123, got %q", claims.Subject)
-// 	}
-// 	if !claims.IsAdmin {
-// 		t.Fatal("expected isAdmin=true")
-// 	}
-// }
+	token, err := svc.GenerateAccessToken(context.Background(), "user-123", false)
+	if err != nil {
+		t.Fatalf("GenerateAccessToken returned error: %v", err)
+	}
 
-// func TestRefreshTokens(t *testing.T) {
-// 	t.Run("success", func(t *testing.T) {
-// 		srv := NewTokenService()
-// 		_, refresh, err := srv.GenerateTokens(context.Background(), "user-123", true)
-// 		if err != nil {
-// 			t.Fatalf("GenerateTokens returned error: %v", err)
-// 		}
+	_, err = svc.ParseAccessToken(context.Background(), token)
+	if !errors.Is(err, ErrExpiredToken) {
+		t.Fatalf("expected ErrExpiredToken, got %v", err)
+	}
+}
 
-// 		newAccess, newRefresh, err := srv.RefreshTokens(context.Background(), refresh)
-// 		if err != nil {
-// 			t.Fatalf("RefreshTokens returned error: %v", err)
-// 		}
-// 		if newAccess == "" {
-// 			t.Fatal("expected non-empty new access token")
-// 		}
-// 		if newRefresh != refresh {
-// 			t.Fatal("expected refresh token to stay the same")
-// 		}
-// 	})
+func TestCrossSecretRejection(t *testing.T) {
+	svc := mustService(t)
+	ctx := context.Background()
 
-// 	t.Run("invalid refresh token", func(t *testing.T) {
-// 		srv := NewTokenService()
+	access, refresh, err := svc.GenerateTokens(ctx, "user-123", false)
+	if err != nil {
+		t.Fatalf("GenerateTokens returned error: %v", err)
+	}
 
-// 		_, _, err := srv.RefreshTokens(context.Background(), "invalid-refresh-token")
-// 		if !errors.Is(err, ErrInvalidToken) {
-// 			t.Fatalf("expected ErrInvalidToken, got %v", err)
-// 		}
-// 	})
+	// A refresh token must never be accepted as an access token, and vice
+	// versa: they are signed with different secrets.
+	if _, err := svc.ParseAccessToken(ctx, refresh); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("refresh token accepted as access token; want ErrInvalidToken, got %v", err)
+	}
+	if _, err := svc.ParseRefreshToken(ctx, access); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("access token accepted as refresh token; want ErrInvalidToken, got %v", err)
+	}
+}
 
-// 	t.Run("missing access secret", func(t *testing.T) {
-// 		srv := NewTokenService()
-// 		_, refresh, err := srv.GenerateTokens(context.Background(), "user-123", true)
-// 		if err != nil {
-// 			t.Fatalf("GenerateTokens returned error: %v", err)
-// 		}
+func TestWrongSignatureRejected(t *testing.T) {
+	svc := mustService(t)
 
-// 		srv.AccessTokenSecretKey = nil
-// 		_, _, err = srv.RefreshTokens(context.Background(), refresh)
-// 		if err == nil {
-// 			t.Fatal("expected error, got nil")
-// 		}
-// 		if !strings.Contains(err.Error(), "creating access token") {
-// 			t.Fatalf("expected wrapped create error, got %v", err)
-// 		}
-// 	})
-// }
+	other := *svc
+	other.AccessTokenSecretKey = []byte("a-completely-different-secret-key-value")
 
-// func TestValidateAccessToken(t *testing.T) {
-// 	srv := NewTokenService()
-// 	access, err := srv.GenerateAccessToken(context.Background(), "user-123", true)
-// 	if err != nil {
-// 		t.Fatalf("GenerateAccessToken returned error: %v", err)
-// 	}
+	token, err := other.GenerateAccessToken(context.Background(), "user-123", false)
+	if err != nil {
+		t.Fatalf("GenerateAccessToken returned error: %v", err)
+	}
 
-// 	if err := srv.ValidateAccessToken(context.Background(), access); err != nil {
-// 		t.Fatalf("ValidateAccessToken returned error: %v", err)
-// 	}
-// }
+	if _, err := svc.ParseAccessToken(context.Background(), token); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("expected ErrInvalidToken for wrong signature, got %v", err)
+	}
+}
 
-// func TestGetSubjectFromToken(t *testing.T) {
-// 	t.Run("success", func(t *testing.T) {
-// 		srv := NewTokenService()
-// 		access, err := srv.GenerateAccessToken(context.Background(), "user-123", true)
-// 		if err != nil {
-// 			t.Fatalf("GenerateAccessToken returned error: %v", err)
-// 		}
+func TestAlgNoneRejected(t *testing.T) {
+	svc := mustService(t)
 
-// 		subject, err := srv.GetSubjectFromToken(context.Background(), access)
-// 		if err != nil {
-// 			t.Fatalf("GetSubjectFromToken returned error: %v", err)
-// 		}
-// 		if subject != "user-123" {
-// 			t.Fatalf("expected subject user-123, got %q", subject)
-// 		}
-// 	})
+	claims := Claims{
+		RegisteredClaims: gojwt.RegisteredClaims{
+			Subject:   "user-123",
+			Issuer:    issuer,
+			ExpiresAt: gojwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	}
+	unsigned := gojwt.NewWithClaims(gojwt.SigningMethodNone, claims)
+	token, err := unsigned.SignedString(gojwt.UnsafeAllowNoneSignatureType)
+	if err != nil {
+		t.Fatalf("signing alg=none token: %v", err)
+	}
 
-// 	t.Run("invalid token", func(t *testing.T) {
-// 		srv := NewTokenService()
+	if _, err := svc.ParseAccessToken(context.Background(), token); err == nil {
+		t.Fatal("alg=none token was accepted; expected rejection")
+	}
+}
 
-// 		_, err := srv.GetSubjectFromToken(context.Background(), "not-a-jwt")
-// 		if !errors.Is(err, ErrInvalidToken) {
-// 			t.Fatalf("expected ErrInvalidToken, got %v", err)
-// 		}
-// 	})
-// }
+func TestIssuerMismatchRejected(t *testing.T) {
+	svc := mustService(t)
+
+	other := *svc
+	other.Issuer = "some-other-service"
+
+	token, err := other.GenerateAccessToken(context.Background(), "user-123", false)
+	if err != nil {
+		t.Fatalf("GenerateAccessToken returned error: %v", err)
+	}
+
+	if _, err := svc.ParseAccessToken(context.Background(), token); err == nil {
+		t.Fatal("token with wrong issuer was accepted; expected rejection")
+	}
+}
+
+func TestParseInvalidInput(t *testing.T) {
+	svc := mustService(t)
+	ctx := context.Background()
+
+	if _, err := svc.ParseAccessToken(ctx, ""); !errors.Is(err, ErrTokenNotFound) {
+		t.Errorf("expected ErrTokenNotFound for empty token, got %v", err)
+	}
+	if _, err := svc.ParseAccessToken(ctx, "not-a-jwt"); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("expected ErrInvalidToken for malformed token, got %v", err)
+	}
+}
+
+func TestGenerateWithEmptySecret(t *testing.T) {
+	svc := mustService(t)
+	svc.AccessTokenSecretKey = nil
+
+	if _, err := svc.GenerateAccessToken(context.Background(), "user-123", false); err == nil {
+		t.Fatal("expected error generating token with empty secret, got nil")
+	}
+}

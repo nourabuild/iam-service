@@ -133,13 +133,13 @@ var registerTests = []struct {
 	expectedResponse   string
 }{
 	{
-		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password1%21`,
+		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password1%21&password_confirm=Password1%21`,
 		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusCreated,
 		expectedResponse:   `{"access_token": "accessToken", "refresh_token": "refreshToken"}`,
 	},
 	{
-		body:               "--AaB03x\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nJohn Doe\r\n--AaB03x\r\nContent-Disposition: form-data; name=\"account\"\r\n\r\njohndoe\r\n--AaB03x\r\nContent-Disposition: form-data; name=\"email\"\r\n\r\nuser@example.com\r\n--AaB03x\r\nContent-Disposition: form-data; name=\"password\"\r\n\r\nPassword1!\r\n--AaB03x--\r\n",
+		body:               "--AaB03x\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nJohn Doe\r\n--AaB03x\r\nContent-Disposition: form-data; name=\"account\"\r\n\r\njohndoe\r\n--AaB03x\r\nContent-Disposition: form-data; name=\"email\"\r\n\r\nuser@example.com\r\n--AaB03x\r\nContent-Disposition: form-data; name=\"password\"\r\n\r\nPassword1!\r\n--AaB03x\r\nContent-Disposition: form-data; name=\"password_confirm\"\r\n\r\nPassword1!\r\n--AaB03x--\r\n",
 		contentType:        "multipart/form-data; boundary=AaB03x",
 		expectedStatusCode: http.StatusCreated,
 		expectedResponse:   `{"access_token": "accessToken", "refresh_token": "refreshToken"}`,
@@ -160,7 +160,8 @@ var registerTests = []struct {
 				"name": "name_required",
 				"account": "account_required",
 				"email": "email_required",
-				"password": "password_required"
+				"password": "password_required",
+				"password_confirm": "password_confirm_required"
 			}
 		}`,
 	},
@@ -174,12 +175,37 @@ var registerTests = []struct {
 				"name": "name_required",
 				"account": "account_required",
 				"email": "email_required",
-				"password": "password_required"
+				"password": "password_required",
+				"password_confirm": "password_confirm_required"
 			}
 		}`,
 	},
 	{
-		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=weak`,
+		// password_confirm omitted entirely
+		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password1%21`,
+		contentType:        "application/x-www-form-urlencoded",
+		expectedStatusCode: http.StatusBadRequest,
+		expectedResponse: `{
+			"error":"missing_required_fields",
+			"details": {
+				"password_confirm": "password_confirm_required"
+			}
+		}`,
+	},
+	{
+		// password_confirm does not match password
+		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password1%21&password_confirm=Different1%21`,
+		contentType:        "application/x-www-form-urlencoded",
+		expectedStatusCode: http.StatusBadRequest,
+		expectedResponse: `{
+			"error":"password_mismatch",
+			"details": {
+				"password_confirm": "password_mismatch"
+			}
+		}`,
+	},
+	{
+		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=weak&password_confirm=weak`,
 		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
@@ -190,7 +216,7 @@ var registerTests = []struct {
 		}`,
 	},
 	{
-		body:               `name=John+Doe&account=johndoe&email=bad-email&password=Password1%21`,
+		body:               `name=John+Doe&account=johndoe&email=bad-email&password=Password1%21&password_confirm=Password1%21`,
 		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
@@ -201,7 +227,7 @@ var registerTests = []struct {
 		}`,
 	},
 	{
-		body:               `name=John+Doe&account=john&email=user%40example.com&password=Password1%21`,
+		body:               `name=John+Doe&account=john&email=user%40example.com&password=Password1%21&password_confirm=Password1%21`,
 		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
@@ -212,7 +238,7 @@ var registerTests = []struct {
 		}`,
 	},
 	{
-		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=password1%21`,
+		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=password1%21&password_confirm=password1%21`,
 		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
@@ -223,7 +249,7 @@ var registerTests = []struct {
 		}`,
 	},
 	{
-		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password%21`,
+		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password%21&password_confirm=Password%21`,
 		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
@@ -234,7 +260,7 @@ var registerTests = []struct {
 		}`,
 	},
 	{
-		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password1`,
+		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password1&password_confirm=Password1`,
 		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusBadRequest,
 		expectedResponse: `{
@@ -245,32 +271,32 @@ var registerTests = []struct {
 		}`,
 	},
 	{
-		body:               `name=John+Doe&account=duplicated_user&email=user%40example.com&password=Password1%21`,
+		body:               `name=John+Doe&account=duplicated_user&email=user%40example.com&password=Password1%21&password_confirm=Password1%21`,
 		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusConflict,
 		expectedResponse:   `{"error": "user_already_exists"}`,
 	},
 	{
-		body:               `name=John+Doe&account=db_create_user_error&email=user%40example.com&password=Password1%21`,
+		body:               `name=John+Doe&account=db_create_user_error&email=user%40example.com&password=Password1%21&password_confirm=Password1%21`,
 		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusInternalServerError,
 		expectedResponse:   `{"error": "internal_create_user_error"}`,
 	},
 	{
-		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password1%21`,
+		body:               `name=John+Doe&account=johndoe&email=user%40example.com&password=Password1%21&password_confirm=Password1%21`,
 		contentType:        "application/x-www-form-urlencoded",
 		forceHashError:     true,
 		expectedStatusCode: http.StatusInternalServerError,
 		expectedResponse:   `{"error": "internal_hash_error"}`,
 	},
 	{
-		body:               `name=John+Doe&account=jwt_generate_tokens_error&email=user%40example.com&password=Password1%21`,
+		body:               `name=John+Doe&account=jwt_generate_tokens_error&email=user%40example.com&password=Password1%21&password_confirm=Password1%21`,
 		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusInternalServerError,
 		expectedResponse:   `{"error": "internal_generate_tokens_error"}`,
 	},
 	{
-		body:               `name=John+Doe&account=db_create_refresh_token_error&email=user%40example.com&password=Password1%21`,
+		body:               `name=John+Doe&account=db_create_refresh_token_error&email=user%40example.com&password=Password1%21&password_confirm=Password1%21`,
 		contentType:        "application/x-www-form-urlencoded",
 		expectedStatusCode: http.StatusInternalServerError,
 		expectedResponse:   `{"error": "internal_generate_tokens_error"}`,

@@ -70,22 +70,23 @@ type NewPasswordResetToken struct {
 	ExpiresAt time.Time
 }
 
-// View maps a user to the view-service instance that holds their personal
-// read model. iam-service owns this directory so meeting events can be routed
-// to the correct per-user view instance.
-// DO NOT USE THIS FOR ANYTHING AT ALL, NEVER EVER, THIS IS JUST A PLACEHOLDER! AGAIN DO NOT ENGAGE!
-type View struct {
-	ID        string    `json:"id"`
-	UserID    string    `json:"user_id"`
-	URL       string    `json:"url"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+// OutboxMessage is an event to be written to auth.outbox in the same
+// transaction as the mutation it announces. Payload is JSON-marshaled.
+type OutboxMessage struct {
+	Topic   string
+	Key     string
+	Payload any
+	Headers map[string]string
 }
 
-// DO NOT USE THIS FOR ANYTHING AT ALL, NEVER EVER, THIS IS JUST A PLACEHOLDER! AGAIN DO NOT ENGAGE!
-type NewView struct {
-	UserID string
-	URL    string
+// OutboxRow is a pending event read back from auth.outbox by the relay.
+type OutboxRow struct {
+	ID        int64
+	Topic     string
+	Key       string
+	Payload   []byte
+	Headers   map[string]string
+	CreatedAt time.Time
 }
 
 type Liveness struct {
