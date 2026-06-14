@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,12 @@ func writeError(c *gin.Context, status int, errCode string, details map[string]s
 	c.JSON(status, response)
 }
 
+// normalizeEmail canonicalizes an email address so lookups and the unique
+// index on lower(email) agree: User@X.com and user@x.com are the same identity.
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
 // =============================================================================
 func (a *App) storeRefreshToken(ctx context.Context, userID, refreshToken string, ttl time.Duration) error {
 	expiresAt := time.Now().UTC().Add(ttl)
@@ -33,26 +40,33 @@ func (a *App) storeRefreshToken(ctx context.Context, userID, refreshToken string
 	return err
 }
 
-// =============================================================================
-func kafkaCorrelationHeader(c *gin.Context, fallback string) []kafka.RecordHeader {
-	correlationID := c.GetHeader("X-Request-ID")
+// outboxHeaders builds the correlation headers stored alongside an outbox
+// event: the inbound X-Request-ID when present, otherwise the user ID.
+func outboxHeaders(requestID, fallback string) map[string]string {
+	correlationID := requestID
 	if correlationID == "" {
 		correlationID = fallback
 	}
 	if correlationID == "" {
 		return nil
 	}
-	return []kafka.RecordHeader{kafka.CorrelationIDHeader(correlationID)}
+	return map[string]string{kafka.HeaderCorrelationID: correlationID}
 }
 
 // =============================================================================
 func (a *App) toSentry(c *gin.Context, handler, errType string, level sentry.Level, err error) {
+	a.toSentryBackground(handler, errType, level, err, c.GetHeader("X-Request-ID"))
+}
+
+// toSentryBackground reports an error without touching the request context,
+// so it is safe to call from goroutines that outlive the handler.
+func (a *App) toSentryBackground(handler, errType string, level sentry.Level, err error, requestID string) {
 	a.sentry.WithScope(func(scope *sentry.Scope) {
 		scope.SetTag("handler", handler)
 		scope.SetExtra("error_type", errType)
 		scope.SetLevel(level)
-		if reqID := c.GetHeader("X-Request-ID"); reqID != "" {
-			scope.SetTag("request_id", reqID)
+		if requestID != "" {
+			scope.SetTag("request_id", requestID)
 		}
 		a.sentry.CaptureException(err)
 	})

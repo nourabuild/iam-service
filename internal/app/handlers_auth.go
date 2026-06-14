@@ -1,7 +1,7 @@
 package app
 
 import (
-	"context"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -21,12 +21,18 @@ import (
 
 const (
 	minPasswordLength = 8
+	// maxPasswordLength is bcrypt's hard input limit: GenerateFromPassword
+	// returns an error beyond 72 bytes, so reject it as validation instead.
+	maxPasswordLength = 72
 	minAccountLength  = 6
 	bcryptCost        = bcrypt.DefaultCost
 
 	maxRegisterFormMemory int64 = 10 << 20 // 10 MB
-	registerRefreshTTL          = 7 * 24 * time.Hour
-	authRefreshTTL              = 30 * 24 * time.Hour
+
+	// refreshTokenTTL bounds how long a stored refresh token can be redeemed.
+	// Keep in sync with jwt.TokenService.RefreshTokenExpiry — the DB row and
+	// the signed token should agree on lifetime.
+	refreshTokenTTL = 30 * 24 * time.Hour
 
 	resetTokenLength = 32            // 32 bytes = 64 hex characters
 	resetTokenTTL    = 1 * time.Hour // Token expires in 1 hour
@@ -74,14 +80,16 @@ func (a *App) HandleRegister(c *gin.Context) {
 
 	name := strings.TrimSpace(c.PostForm("name"))
 	account := strings.TrimSpace(c.PostForm("account"))
-	email := strings.TrimSpace(c.PostForm("email"))
+	email := normalizeEmail(c.PostForm("email"))
 	password := c.PostForm("password")
+	passwordConfirm := c.PostForm("password_confirm")
 
 	req := models.NewUser{
-		Name:     name,
-		Account:  account,
-		Email:    email,
-		Password: []byte(password),
+		Name:            name,
+		Account:         account,
+		Email:           email,
+		Password:        []byte(password),
+		PasswordConfirm: []byte(passwordConfirm),
 	}
 
 	errCode, validationErrors := validateRegisterInput(req)
@@ -105,7 +113,25 @@ func (a *App) HandleRegister(c *gin.Context) {
 		PasswordConfirm: req.PasswordConfirm,
 	}
 
-	createdUser, err := a.db.CreateUser(ctx, newUser)
+	// The UserCreated event is written to the outbox in the same transaction
+	// as the user row; the relay delivers it to Kafka at-least-once.
+	requestID := c.GetHeader("X-Request-ID")
+	createdUser, err := a.db.CreateUser(ctx, newUser, func(u models.User) *models.OutboxMessage {
+		return &models.OutboxMessage{
+			Topic: kafka.ProduceTopicUserCreated,
+			Key:   u.ID,
+			Payload: models.UserCreatedEvent{
+				EventType:  "UserCreated",
+				UserID:     u.ID,
+				Name:       u.Name,
+				Email:      u.Email,
+				Account:    u.Account,
+				IsAdmin:    u.IsAdmin,
+				OccurredAt: time.Now().UTC(),
+			},
+			Headers: outboxHeaders(requestID, u.ID),
+		}
+	})
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
 			writeError(c, http.StatusConflict, "user_already_exists", nil)
@@ -123,30 +149,10 @@ func (a *App) HandleRegister(c *gin.Context) {
 		return
 	}
 
-	if err := a.storeRefreshToken(ctx, createdUser.ID, refreshToken, registerRefreshTTL); err != nil {
+	if err := a.storeRefreshToken(ctx, createdUser.ID, refreshToken, refreshTokenTTL); err != nil {
 		a.toSentry(c, "register", "db_token", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
-	}
-
-	event := models.UserCreatedEvent{
-		EventType:  "UserCreated",
-		UserID:     createdUser.ID,
-		Name:       createdUser.Name,
-		Email:      createdUser.Email,
-		Account:    createdUser.Account,
-		IsAdmin:    createdUser.IsAdmin,
-		OccurredAt: time.Now().UTC(),
-	}
-	if a.kafka != nil {
-		headers := kafkaCorrelationHeader(c, createdUser.ID)
-		go func() {
-			produceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := a.kafka.Produce(produceCtx, kafka.ProduceTopicUserCreated, []byte(createdUser.ID), event, headers...); err != nil {
-				a.toSentry(c, "register", "kafka", sentry.LevelError, err)
-			}
-		}()
 	}
 
 	c.JSON(http.StatusCreated, TokenResponse{AccessToken: accessToken, RefreshToken: refreshToken})
@@ -160,7 +166,7 @@ func (a *App) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	req.Email = strings.TrimSpace(req.Email)
+	req.Email = normalizeEmail(req.Email)
 
 	if validationErrors := validateLoginInput(req); len(validationErrors) > 0 {
 		writeError(c, http.StatusBadRequest, "missing_required_fields", validationErrors)
@@ -190,7 +196,7 @@ func (a *App) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	if err := a.storeRefreshToken(c.Request.Context(), user.ID, refreshToken, authRefreshTTL); err != nil {
+	if err := a.storeRefreshToken(c.Request.Context(), user.ID, refreshToken, refreshTokenTTL); err != nil {
 		a.toSentry(c, "login", "db_token", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
@@ -270,7 +276,7 @@ func (a *App) HandleRefresh(c *gin.Context) {
 		return
 	}
 
-	if err := a.storeRefreshToken(c.Request.Context(), storedToken.UserID, newRefresh, authRefreshTTL); err != nil {
+	if err := a.storeRefreshToken(c.Request.Context(), storedToken.UserID, newRefresh, refreshTokenTTL); err != nil {
 		a.toSentry(c, "refresh", "db_token", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
@@ -300,9 +306,16 @@ func validateRegisterInput(req models.NewUser) (string, map[string]string) {
 	if len(req.Password) == 0 {
 		validationErrors["password"] = "password_required"
 	}
+	if len(req.PasswordConfirm) == 0 {
+		validationErrors["password_confirm"] = "password_confirm_required"
+	}
 
 	if len(validationErrors) > 0 {
 		return "missing_required_fields", validationErrors
+	}
+
+	if !bytes.Equal(req.Password, req.PasswordConfirm) {
+		validationErrors["password_confirm"] = "password_mismatch"
 	}
 
 	if _, err := mail.ParseAddress(req.Email); err != nil {
@@ -316,6 +329,8 @@ func validateRegisterInput(req models.NewUser) (string, map[string]string) {
 	var complexity passwordComplexity
 	if len(req.Password) < minPasswordLength {
 		validationErrors["password"] = "password_too_short"
+	} else if len(req.Password) > maxPasswordLength {
+		validationErrors["password"] = "password_too_long"
 	} else {
 		complexity = passwordComplexityFlags(req.Password)
 		if !complexity.hasUpper {
@@ -386,12 +401,17 @@ func passwordComplexityFlags(password []byte) passwordComplexity {
 
 func primaryRegisterError(details map[string]string, password []byte, complexity passwordComplexity) string {
 	errCode := "invalid_email"
+	if _, hasConfirmErr := details["password_confirm"]; hasConfirmErr {
+		errCode = "password_mismatch"
+	}
 	if _, hasAccountErr := details["account"]; hasAccountErr {
 		errCode = "account_too_short"
 	}
 	if _, hasPasswordErr := details["password"]; hasPasswordErr {
 		if len(password) < minPasswordLength {
 			errCode = "password_too_short"
+		} else if len(password) > maxPasswordLength {
+			errCode = "password_too_long"
 		} else if !complexity.hasUpper {
 			errCode = "password_must_contain_uppercase"
 		} else if !complexity.hasNumber {
@@ -437,6 +457,8 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
 	}
+
+	req.Email = normalizeEmail(req.Email)
 
 	user, err := a.db.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil {
@@ -492,9 +514,9 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 		return
 	}
 
-	// Validate passwords match
+	// Validate passwords match (input validation, not an auth failure)
 	if req.Password != req.PasswordConfirm {
-		writeError(c, http.StatusUnauthorized, "password_mismatch", map[string]string{
+		writeError(c, http.StatusBadRequest, "password_mismatch", map[string]string{
 			"field": "password_confirm",
 		})
 		return
@@ -506,8 +528,10 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 		return
 	}
 
-	// Get and validate reset token
-	resetToken, err := a.db.GetPasswordResetToken(c.Request.Context(), req.Token)
+	// Atomically redeem the reset token: it is marked used in the same
+	// statement that validates it, so a concurrent request presenting the
+	// same token loses the race and gets "invalid_or_expired".
+	resetToken, err := a.db.ConsumePasswordResetToken(c.Request.Context(), req.Token)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			writeError(c, http.StatusBadRequest, "invalid_or_expired_reset_token", nil)
@@ -532,13 +556,6 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 		a.toSentry(c, "reset_password", "db", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_reset_password_error", nil)
 		return
-	}
-
-	// Mark token as used
-	err = a.db.MarkPasswordResetTokenAsUsed(c.Request.Context(), resetToken.ID)
-	if err != nil {
-		// Log error but don't fail the request since password was already updated
-		a.toSentry(c, "reset_password", "db", sentry.LevelWarning, err)
 	}
 
 	// Optionally revoke all refresh tokens for security
@@ -566,6 +583,9 @@ func generateSecureToken(length int) (string, error) {
 func validatePassword(password string) error {
 	if len(password) < minPasswordLength {
 		return errors.New("password_too_short")
+	}
+	if len(password) > maxPasswordLength {
+		return errors.New("password_too_long")
 	}
 
 	complexity := passwordComplexityFlags([]byte(password))

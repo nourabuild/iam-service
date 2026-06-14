@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  # push:
+  #   branches: [main]
+  # pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    name: Build, lint, unit tests
+    runs-on: ubuntu-latest
+    env:
+      # Test-only signing keys (>= 32 bytes each); never used outside CI.
+      JWT_ACCESS_TOKEN_SECRET: ci-only-access-secret-0123456789abcdef
+      JWT_REFRESH_TOKEN_SECRET: ci-only-refresh-secret-0123456789abcdef
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      - name: Unit tests (handlers, middleware, services)
+        run: go test -race ./internal/app/... ./internal/sdk/middleware/... ./internal/services/...
+
+  db-tests:
+    name: Database tests (testcontainers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: sqldb tests against real Postgres
+        run: go test -race ./internal/sdk/sqldb/...

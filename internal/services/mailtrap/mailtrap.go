@@ -5,18 +5,19 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"time"
 )
 
 type MailtrapService struct {
-	apiKey     string
-	apiURL     string
-	fromEmail  string
-	fromName   string
-	httpClient *http.Client
+	apiKey       string
+	apiURL       string
+	fromEmail    string
+	fromName     string
+	resetURL     string
+	templateUUID string
+	httpClient   *http.Client
 }
 
 // NewMailtrapService creates a new email service instance
@@ -36,11 +37,26 @@ func NewMailtrapService() *MailtrapService {
 		fromName = "IAM Service"
 	}
 
+	// Where the reset link in the email points. Must match the frontend for
+	// the environment this instance serves — a staging IAM must not send
+	// users to the production reset page.
+	resetURL := os.Getenv("PASSWORD_RESET_URL")
+	if resetURL == "" {
+		resetURL = "https://meets.noura.software/reset-password"
+	}
+
+	templateUUID := os.Getenv("MAILTRAP_TEMPLATE_UUID")
+	if templateUUID == "" {
+		templateUUID = "76de4eda-254e-41ed-87f8-a2fe114b616b"
+	}
+
 	return &MailtrapService{
-		apiKey:    os.Getenv("MAILTRAP_API_TOKEN"),
-		apiURL:    apiURL,
-		fromEmail: fromEmail,
-		fromName:  fromName,
+		apiKey:       os.Getenv("MAILTRAP_API_TOKEN"),
+		apiURL:       apiURL,
+		fromEmail:    fromEmail,
+		fromName:     fromName,
+		resetURL:     resetURL,
+		templateUUID: templateUUID,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -52,11 +68,7 @@ type MailtrapRepository interface {
 }
 
 func (m *MailtrapService) SendPasswordResetEmail(to, token string) error {
-	log.Printf("[Mailtrap] Attempting to send email to: %s", to)
-	log.Printf("[Mailtrap] Using API URL: %s", m.apiURL)
-	log.Printf("[Mailtrap] API Key present: %v", m.apiKey != "")
-
-	resetURL := fmt.Sprintf("https://meets.noura.software/reset-password?token=%s", token)
+	resetURL := fmt.Sprintf("%s?token=%s", m.resetURL, token)
 
 	reqBody := map[string]interface{}{
 		"from": map[string]string{
@@ -66,7 +78,7 @@ func (m *MailtrapService) SendPasswordResetEmail(to, token string) error {
 		"to": []map[string]string{
 			{"email": to},
 		},
-		"template_uuid": "76de4eda-254e-41ed-87f8-a2fe114b616b",
+		"template_uuid": m.templateUUID,
 		"template_variables": map[string]string{
 			"user_email":      to,
 			"pass_reset_link": resetURL,
@@ -88,23 +100,19 @@ func (m *MailtrapService) SendPasswordResetEmail(to, token string) error {
 
 	resp, err := m.httpClient.Do(httpReq)
 	if err != nil {
-		log.Printf("[Mailtrap] HTTP request error: %v", err)
 		return fmt.Errorf("sending email request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// Read response body for detailed error message
+		// Read response body for detailed error message. Recipient addresses
+		// are deliberately kept out of logs and error strings (PII).
 		var errBody bytes.Buffer
 		if _, readErr := errBody.ReadFrom(resp.Body); readErr == nil {
-			errMsg := errBody.String()
-			log.Printf("[Mailtrap] API error (status %d): %s", resp.StatusCode, errMsg)
-			return fmt.Errorf("mailtrap API returned status %d: %s", resp.StatusCode, errMsg)
+			return fmt.Errorf("mailtrap API returned status %d: %s", resp.StatusCode, errBody.String())
 		}
-		log.Printf("[Mailtrap] API error (status %d)", resp.StatusCode)
 		return fmt.Errorf("mailtrap API returned status %d", resp.StatusCode)
 	}
 
-	log.Printf("[Mailtrap] Email sent successfully to: %s", to)
 	return nil
 }

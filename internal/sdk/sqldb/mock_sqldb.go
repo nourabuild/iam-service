@@ -10,16 +10,6 @@ import (
 
 type mockService struct{}
 
-// CreateView implements [Service].
-func (m *mockService) CreateView(ctx context.Context, view models.NewView) (models.View, error) {
-	panic("unimplemented")
-}
-
-// GetViewByUserID implements [Service].
-func (m *mockService) GetViewByUserID(ctx context.Context, userID string) (models.View, error) {
-	panic("unimplemented")
-}
-
 func NewMockService() Service {
 	return &mockService{}
 }
@@ -62,7 +52,7 @@ func (m *mockService) CreateRefreshToken(ctx context.Context, token models.NewRe
 }
 
 // CreateUser implements [Service].
-func (m *mockService) CreateUser(ctx context.Context, user models.NewUser) (models.User, error) {
+func (m *mockService) CreateUser(ctx context.Context, user models.NewUser, eventFn OutboxEventFunc) (models.User, error) {
 	if user.Account == "db_create_user_error" {
 		return models.User{}, errors.New("error creating user")
 	}
@@ -78,7 +68,12 @@ func (m *mockService) CreateUser(ctx context.Context, user models.NewUser) (mode
 		createdUserID = "db_create_refresh_token_error"
 	}
 
-	return models.User{ID: createdUserID}, nil
+	created := models.User{ID: createdUserID}
+	// Exercise the event-building closure the way the real service would.
+	if eventFn != nil {
+		_ = eventFn(created)
+	}
+	return created, nil
 }
 
 // DeleteExpiredPasswordResetTokens implements [Service].
@@ -99,21 +94,23 @@ func (m *mockService) DeleteRefreshTokensByUserID(ctx context.Context, userID st
 	return nil
 }
 
-// GetPasswordResetToken implements [Service].
-func (m *mockService) GetPasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error) {
+// ConsumePasswordResetToken implements [Service].
+func (m *mockService) ConsumePasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error) {
 	if token == "invalid-reset-token" {
 		return models.PasswordResetToken{}, ErrDBNotFound
 	}
 	if token == "db_get_reset_token_error" {
-		return models.PasswordResetToken{}, errors.New("error getting password reset token")
+		return models.PasswordResetToken{}, errors.New("error consuming password reset token")
 	}
 
+	now := time.Now().UTC()
 	return models.PasswordResetToken{
 		ID:        "reset-token-id",
 		UserID:    "user-id",
 		Token:     token,
-		ExpiresAt: time.Now().UTC().Add(time.Hour),
-		CreatedAt: time.Now().UTC(),
+		ExpiresAt: now.Add(time.Hour),
+		UsedAt:    &now,
+		CreatedAt: now,
 	}, nil
 }
 
@@ -211,8 +208,10 @@ func (m *mockService) GetUserByID(ctx context.Context, userID string) (models.Us
 
 // Health implements [Service].
 func (m *mockService) Health() map[string]string {
-	var res = make(map[string]string)
-	return res
+	return map[string]string{
+		"status":  "up",
+		"message": "It's healthy",
+	}
 }
 
 // ListUsers implements [Service].
@@ -220,16 +219,8 @@ func (m *mockService) ListUsers(ctx context.Context) ([]models.User, error) {
 	return []models.User{{ID: "user-id", Email: "user@example.com", Account: "test-user"}}, nil
 }
 
-// MarkPasswordResetTokenAsUsed implements [Service].
-func (m *mockService) MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID string) error {
-	if tokenID == "db_mark_reset_token_used_error" {
-		return errors.New("error marking reset token as used")
-	}
-	return nil
-}
-
 // PromoteUserToAdmin implements [Service].
-func (m *mockService) PromoteUserToAdmin(ctx context.Context, userID string) (models.User, error) {
+func (m *mockService) PromoteUserToAdmin(ctx context.Context, userID string, eventFn OutboxEventFunc) (models.User, error) {
 	if userID == "db_promote_user_error" {
 		return models.User{}, errors.New("error promoting user")
 	}
@@ -237,11 +228,15 @@ func (m *mockService) PromoteUserToAdmin(ctx context.Context, userID string) (mo
 		return models.User{}, ErrDBNotFound
 	}
 
-	return models.User{ID: userID, IsAdmin: true}, nil
+	user := models.User{ID: userID, IsAdmin: true}
+	if eventFn != nil {
+		_ = eventFn(user)
+	}
+	return user, nil
 }
 
 // DemoteUserFromAdmin implements [Service].
-func (m *mockService) DemoteUserFromAdmin(ctx context.Context, userID string) (models.User, error) {
+func (m *mockService) DemoteUserFromAdmin(ctx context.Context, userID string, eventFn OutboxEventFunc) (models.User, error) {
 	if userID == "db_demote_user_error" {
 		return models.User{}, errors.New("error demoting user")
 	}
@@ -249,7 +244,26 @@ func (m *mockService) DemoteUserFromAdmin(ctx context.Context, userID string) (m
 		return models.User{}, ErrDBNotFound
 	}
 
-	return models.User{ID: userID, IsAdmin: false}, nil
+	user := models.User{ID: userID, IsAdmin: false}
+	if eventFn != nil {
+		_ = eventFn(user)
+	}
+	return user, nil
+}
+
+// FetchUnpublishedOutbox implements [Service].
+func (m *mockService) FetchUnpublishedOutbox(ctx context.Context, limit int) ([]models.OutboxRow, error) {
+	return nil, nil
+}
+
+// MarkOutboxPublished implements [Service].
+func (m *mockService) MarkOutboxPublished(ctx context.Context, ids []int64) error {
+	return nil
+}
+
+// DeletePublishedOutbox implements [Service].
+func (m *mockService) DeletePublishedOutbox(ctx context.Context, olderThan time.Duration) error {
+	return nil
 }
 
 // RevokeRefreshToken implements [Service].
@@ -269,14 +283,14 @@ func (m *mockService) UpdateUserPassword(ctx context.Context, userID string, new
 }
 
 // UpdateUser implements [Service].
-func (m *mockService) UpdateUser(ctx context.Context, userID string, update models.UpdateUser) (models.User, error) {
+func (m *mockService) UpdateUser(ctx context.Context, userID string, update models.UpdateUser, eventFn OutboxEventFunc) (models.User, error) {
 	if userID == "db_update_user_error" {
 		return models.User{}, errors.New("error updating user")
 	}
 	if update.Account == "taken_account" {
 		return models.User{}, ErrDBDuplicatedEntry
 	}
-	return models.User{
+	user := models.User{
 		ID:        userID,
 		Name:      update.Name,
 		Account:   update.Account,
@@ -288,5 +302,9 @@ func (m *mockService) UpdateUser(ctx context.Context, userID string, update mode
 		IsAdmin:   false,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
-	}, nil
+	}
+	if eventFn != nil {
+		_ = eventFn(user)
+	}
+	return user, nil
 }
