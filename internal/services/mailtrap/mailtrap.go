@@ -27,12 +27,12 @@ func NewMailtrapService() *MailtrapService {
 		apiURL = "https://send.api.mailtrap.io/api/send" // Default to production
 	}
 
-	fromEmail := os.Getenv("EMAILS_FROM_EMAIL")
+	fromEmail := os.Getenv("MAILTRAP_SENDER_EMAIL")
 	if fromEmail == "" {
 		fromEmail = "noreply@example.com"
 	}
 
-	fromName := os.Getenv("EMAILS_FROM_NAME")
+	fromName := os.Getenv("MAILTRAP_SENDER_NAME")
 	if fromName == "" {
 		fromName = "IAM Service"
 	}
