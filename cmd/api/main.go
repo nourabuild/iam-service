@@ -14,6 +14,8 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/nourabuild/iam-service/internal/app"
+	"github.com/nourabuild/iam-service/internal/sdk/config"
+	"github.com/nourabuild/iam-service/internal/sdk/observability"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
 	"github.com/nourabuild/iam-service/internal/services/kafka"
@@ -41,6 +43,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	if err := run(logger); err != nil {
+		// Because AddSource is true, this will explicitly tell you what line failed
 		logger.Error("application startup failed", "error", err)
 		os.Exit(1)
 	}
@@ -49,6 +52,35 @@ func main() {
 func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	shutdownSentry, err := sentry.SetupSentry(ctx, cfg.Sentry, logger)
+	if err != nil {
+		return fmt.Errorf("setup sentry: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Sentry.SentryFlushTimeout)
+		defer cancel()
+		if err := shutdownSentry(shutdownCtx); err != nil {
+			logger.Error("shutdown sentry", "error", err)
+		}
+	}()
+
+	shutdownTracing, err := observability.SetupTracing(ctx, cfg.Observability, logger)
+	if err != nil {
+		return fmt.Errorf("setup tracing: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			logger.Error("shutdown tracing", "error", err)
+		}
+	}()
 
 	var wg sync.WaitGroup
 
@@ -59,18 +91,17 @@ func run(logger *slog.Logger) error {
 	}
 	defer sqlService.Close()
 
-	// Initialize Sentry for error tracking
-	sentryService := sentry.NewSentryService()
-	defer sentryService.Close()
-
 	// Initialize JWT service
-	jwtService, err := jwt.NewTokenService()
-	if err != nil {
-		return fmt.Errorf("init jwt: %w", err)
-	}
+	jwtService := jwt.NewTokenService(cfg.Auth)
 
 	// Initialize Mailtrap service
-	emailService := mailtrap.NewMailtrapService()
+	emailService := mailtrap.NewMailtrapService(
+		cfg.Mailtrap.APIToken,
+		cfg.Mailtrap.SenderEmail,
+		cfg.Mailtrap.SenderName,
+		cfg.Mailtrap.TemplateUUID,
+		cfg.Mailtrap.PasswordResetURL,
+	)
 
 	// Initialize Kafka producer
 	kafkaService := kafka.NewKafkaService()
@@ -81,7 +112,6 @@ func run(logger *slog.Logger) error {
 	// App Initialization
 	iamApp := app.NewApp(
 		sqlService,
-		sentryService,
 		jwtService,
 		emailService,
 		kafkaService,
@@ -89,11 +119,11 @@ func run(logger *slog.Logger) error {
 
 	// HTTP server with configured timeouts
 	srv := &http.Server{
-		Addr:         ":" + getEnv("PORT", "10067"),
-		Handler:      iamApp.RegisterRoutes(),
-		IdleTimeout:  time.Minute,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Addr:         ":" + cfg.HTTP.Port,
+		Handler:      iamApp.RegisterRoutes(cfg.Sentry),
+		IdleTimeout:  cfg.HTTP.IdleTimeout,
+		ReadTimeout:  cfg.HTTP.ReadTimeout,
+		WriteTimeout: cfg.HTTP.WriteTimeout,
 		ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
 
@@ -153,11 +183,4 @@ func run(logger *slog.Logger) error {
 	wg.Wait()
 	logger.Info("shutdown complete")
 	return nil
-}
-
-func getEnv(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return fallback
 }

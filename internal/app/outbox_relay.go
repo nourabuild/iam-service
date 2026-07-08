@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/nourabuild/iam-service/internal/services/kafka"
-	"github.com/nourabuild/iam-service/internal/services/sentry"
 )
 
 const outboxBatchSize = 100
@@ -44,7 +43,7 @@ func (a *App) drainOutbox(ctx context.Context) {
 			// Shutdown is not an error; anything else is reported and
 			// retried on the next tick.
 			if ctx.Err() == nil {
-				a.toSentryBackground("outbox_relay", "relay", sentry.LevelError, err, "")
+				a.reportBackground(ctx, "outbox_relay", "relay", slog.LevelError, err, "")
 			}
 			return
 		}

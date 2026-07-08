@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nourabuild/iam-service/internal/sdk/config"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
 )
 
@@ -16,14 +17,13 @@ import (
 // actual JWT parsing rather than a mock's approximation of it.
 func newTokenService(t *testing.T) *jwt.TokenService {
 	t.Helper()
-	t.Setenv("JWT_ACCESS_TOKEN_SECRET", "middleware-test-access-secret-0123456789")
-	t.Setenv("JWT_REFRESH_TOKEN_SECRET", "middleware-test-refresh-secret-0123456789")
 
-	svc, err := jwt.NewTokenService()
-	if err != nil {
-		t.Fatalf("NewTokenService() returned error: %v", err)
-	}
-	return svc
+	return jwt.NewTokenService(config.AuthConfig{
+		JWTSecret:       "middleware-test-access-secret-0123456789",
+		Issuer:          "middleware-test",
+		AccessTokenTTL:  15 * time.Minute,
+		RefreshTokenTTL: 30 * 24 * time.Hour,
+	})
 }
 
 func newAuthEngine(svc jwt.TokenRepository) *gin.Engine {
@@ -35,8 +35,8 @@ func newAuthEngine(svc jwt.TokenRepository) *gin.Engine {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "no_user_in_context"})
 			return
 		}
-		isAdmin, _ := c.Get(IsAdminKey)
-		c.JSON(http.StatusOK, gin.H{"user_id": userID, "is_admin": isAdmin})
+		role, _ := c.Get(RoleKey)
+		c.JSON(http.StatusOK, gin.H{"user_id": userID, "role": role})
 	})
 	return r
 }
@@ -45,14 +45,18 @@ func TestAuthenticate(t *testing.T) {
 	svc := newTokenService(t)
 	engine := newAuthEngine(svc)
 
-	validToken, err := svc.GenerateAccessToken(context.Background(), "user-123", true)
+	validToken, _, err := svc.IssueAccessToken(models.User{ID: "user-123", IsAdmin: true, Role: models.RoleAdmin}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("generating valid token: %v", err)
 	}
 
-	expiredSvc := *svc
-	expiredSvc.AccessTokenExpiry = -time.Minute
-	expiredToken, err := expiredSvc.GenerateAccessToken(context.Background(), "user-123", false)
+	expiredSvc := jwt.NewTokenService(config.AuthConfig{
+		JWTSecret:       "middleware-test-access-secret-0123456789",
+		Issuer:          "middleware-test",
+		AccessTokenTTL:  -time.Minute,
+		RefreshTokenTTL: 30 * 24 * time.Hour,
+	})
+	expiredToken, _, err := expiredSvc.IssueAccessToken(models.User{ID: "user-123", Role: models.RoleUser}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("generating expired token: %v", err)
 	}
@@ -85,13 +89,13 @@ func TestAuthenticate(t *testing.T) {
 			name:           "garbage token",
 			authHeader:     "Bearer not-a-jwt",
 			expectedStatus: http.StatusUnauthorized,
-			expectedError:  "invalid_token",
+			expectedError:  "unauthorized",
 		},
 		{
 			name:           "expired token",
 			authHeader:     "Bearer " + expiredToken,
 			expectedStatus: http.StatusUnauthorized,
-			expectedError:  "expired_token",
+			expectedError:  "unauthorized",
 		},
 		{
 			name:           "valid token",
@@ -134,8 +138,8 @@ func TestAuthenticate(t *testing.T) {
 			if body["user_id"] != "user-123" {
 				t.Errorf("expected user_id user-123 in context, got %v", body["user_id"])
 			}
-			if body["is_admin"] != true {
-				t.Errorf("expected is_admin true in context, got %v", body["is_admin"])
+			if body["role"] != string(models.RoleAdmin) {
+				t.Errorf("expected role admin in context, got %v", body["role"])
 			}
 		})
 	}
@@ -161,7 +165,7 @@ func TestGetUserID(t *testing.T) {
 
 	t.Run("present", func(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
-		c.Set(UserIDKey, "user-123")
+		SetPrincipal(c, models.Principal{ID: "user-123", Role: models.RoleUser})
 		id, err := GetUserID(c)
 		if err != nil {
 			t.Fatalf("GetUserID returned error: %v", err)

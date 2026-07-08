@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nourabuild/iam-service/internal/sdk/config"
 	"github.com/nourabuild/iam-service/internal/sdk/middleware"
+	"github.com/nourabuild/iam-service/internal/sdk/observability"
+	"github.com/nourabuild/iam-service/internal/services/sentry"
 	"golang.org/x/time/rate"
 )
 
@@ -35,8 +38,9 @@ var (
 // Route Registration
 // ----------------------------------------------------------------------------
 
-func (a *App) RegisterRoutes() *gin.Engine {
+func (a *App) RegisterRoutes(sentryCfg config.Sentry) *gin.Engine {
 	router := gin.New()
+	logger := slog.Default()
 
 	// Only honour X-Forwarded-For from proxies we control; otherwise a client
 	// can spoof its IP to dodge per-IP rate limits and pollute logs. An empty
@@ -46,9 +50,16 @@ func (a *App) RegisterRoutes() *gin.Engine {
 	}
 
 	// Global middleware chain
-	router.Use(gin.Recovery())      // Panic recovery
-	router.Use(middleware.Logger()) // Custom slog logger
-	router.Use(middleware.CORS())   // CORS support
+	router.Use(middleware.RequestID())      // Correlation IDs
+	router.Use(middleware.Recovery(logger)) // Panic recovery
+	if sentryCfg.DSN != "" {
+		router.Use(sentry.SentryMiddleware(sentryCfg))
+		router.Use(sentry.SentryRequestContext())
+	}
+	router.Use(middleware.Logger(logger))    // Custom slog logger
+	router.Use(observability.Metrics())      // HTTP request metrics
+	router.Use(middleware.SecurityHeaders()) // Conservative response headers
+	router.Use(middleware.CORS())            // CORS support
 
 	// API v1 route group
 	v1 := router.Group("/api/v1")
@@ -75,6 +86,9 @@ func (a *App) RegisterRoutes() *gin.Engine {
 		user := v1.Group("/user")
 		user.Use(middleware.RateLimit(userRate, userBurst))
 		user.Use(middleware.Authenticate(a.jwt))
+		if sentryCfg.DSN != "" {
+			user.Use(sentry.SentryPrincipal())
+		}
 		{
 			user.GET("/me", a.HandleMe)
 			user.POST("/me/password/change", a.HandlePasswordChange)
@@ -85,6 +99,9 @@ func (a *App) RegisterRoutes() *gin.Engine {
 		admin := v1.Group("/admin")
 		admin.Use(middleware.RateLimit(adminRate, adminBurst))
 		admin.Use(middleware.Authenticate(a.jwt))
+		if sentryCfg.DSN != "" {
+			admin.Use(sentry.SentryPrincipal())
+		}
 		admin.Use(middleware.AuthorizeAdmin())
 		{
 			admin.GET("/users", a.HandleListUsers)

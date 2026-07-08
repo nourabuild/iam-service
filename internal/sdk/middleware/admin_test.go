@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
 // newAdminEngine wires AuthorizeAdmin behind a setup middleware that seeds the
@@ -28,23 +29,23 @@ func TestAuthorizeAdmin(t *testing.T) {
 		expectedStatus int
 	}{
 		{
-			name:           "no is_admin in context",
+			name:           "no principal in context",
 			seed:           func(c *gin.Context) {},
 			expectedStatus: http.StatusUnauthorized,
 		},
 		{
-			name:           "is_admin wrong type",
-			seed:           func(c *gin.Context) { c.Set(IsAdminKey, "true") },
+			name:           "principal wrong type",
+			seed:           func(c *gin.Context) { c.Set(principalKey, "admin") },
 			expectedStatus: http.StatusUnauthorized,
 		},
 		{
 			name:           "non-admin user",
-			seed:           func(c *gin.Context) { c.Set(IsAdminKey, false) },
+			seed:           func(c *gin.Context) { SetPrincipal(c, models.Principal{ID: "user-id", Role: models.RoleUser}) },
 			expectedStatus: http.StatusForbidden,
 		},
 		{
 			name:           "admin user",
-			seed:           func(c *gin.Context) { c.Set(IsAdminKey, true) },
+			seed:           func(c *gin.Context) { SetPrincipal(c, models.Principal{ID: "user-id", Role: models.RoleAdmin}) },
 			expectedStatus: http.StatusOK,
 		},
 	}

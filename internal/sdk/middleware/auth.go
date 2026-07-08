@@ -1,17 +1,17 @@
 package middleware
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
 )
 
 const (
-	UserIDKey  = "user_id"
-	IsAdminKey = "is_admin"
+	UserIDKey = "user_id"
+	RoleKey   = "role"
 )
 
 // Authenticate validates the Authorization header and attaches user context.
@@ -32,28 +32,27 @@ func Authenticate(jwtService jwt.TokenRepository) gin.HandlerFunc {
 			return
 		}
 
-		claims, err := jwtService.ParseAccessToken(c.Request.Context(), parts[1])
+		claims, err := jwtService.ParseAccessToken(parts[1])
 		if err != nil {
-			switch {
-			case errors.Is(err, jwt.ErrExpiredToken):
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "expired_token"})
-			case errors.Is(err, jwt.ErrInvalidToken):
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
-			default:
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-			}
-			c.Abort()
-			return
-		}
-
-		if claims.Subject == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			c.Abort()
 			return
 		}
 
-		c.Set(UserIDKey, claims.Subject)
-		c.Set(IsAdminKey, claims.IsAdmin)
+		if claims.ID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			c.Abort()
+			return
+		}
+
+		principal := claims
+		if !principal.Role.Valid() {
+			principal.Role = models.RoleUser
+		}
+
+		SetPrincipal(c, principal)
+		c.Set(UserIDKey, principal.ID)
+		c.Set(RoleKey, principal.Role)
 		c.Next()
 	}
 }

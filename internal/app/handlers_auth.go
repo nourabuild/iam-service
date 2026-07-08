@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/mail"
 	"strings"
@@ -13,9 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
-	"github.com/nourabuild/iam-service/internal/services/jwt"
 	"github.com/nourabuild/iam-service/internal/services/kafka"
-	"github.com/nourabuild/iam-service/internal/services/sentry"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -28,11 +27,6 @@ const (
 	bcryptCost        = bcrypt.DefaultCost
 
 	maxRegisterFormMemory int64 = 10 << 20 // 10 MB
-
-	// refreshTokenTTL bounds how long a stored refresh token can be redeemed.
-	// Keep in sync with jwt.TokenService.RefreshTokenExpiry — the DB row and
-	// the signed token should agree on lifetime.
-	refreshTokenTTL = 30 * 24 * time.Hour
 
 	resetTokenLength = 32            // 32 bytes = 64 hex characters
 	resetTokenTTL    = 1 * time.Hour // Token expires in 1 hour
@@ -73,7 +67,7 @@ func parseMultipartOrForm(r *http.Request, maxMemory int64) error {
 func (a *App) HandleRegister(c *gin.Context) {
 	ctx := c.Request.Context()
 	if err := parseMultipartOrForm(c.Request, maxRegisterFormMemory); err != nil {
-		a.toSentry(c, "register", "parse_form", sentry.LevelError, err)
+		a.report(c, "register", "parse_form", slog.LevelError, err)
 		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
 	}
@@ -100,7 +94,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 
 	hashedPassword, err := generateFromPassword(req.Password, bcryptCost)
 	if err != nil {
-		a.toSentry(c, "register", "bcrypt", sentry.LevelError, err)
+		a.report(c, "register", "bcrypt", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_hash_error", nil)
 		return
 	}
@@ -127,6 +121,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 				Email:      u.Email,
 				Account:    u.Account,
 				IsAdmin:    u.IsAdmin,
+				Role:       u.Role,
 				OccurredAt: time.Now().UTC(),
 			},
 			Headers: outboxHeaders(requestID, u.ID),
@@ -137,31 +132,34 @@ func (a *App) HandleRegister(c *gin.Context) {
 			writeError(c, http.StatusConflict, "user_already_exists", nil)
 			return
 		}
-		a.toSentry(c, "register", "db", sentry.LevelError, err)
+		a.report(c, "register", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_create_user_error", nil)
 		return
 	}
 
-	accessToken, refreshToken, err := a.jwt.GenerateTokens(ctx, createdUser.ID, createdUser.IsAdmin)
+	tokenPair, err := a.jwt.IssuePair(createdUser, time.Now().UTC())
 	if err != nil {
-		a.toSentry(c, "register", "jwt", sentry.LevelError, err)
+		a.report(c, "register", "jwt", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
-	if err := a.storeRefreshToken(ctx, createdUser.ID, refreshToken, refreshTokenTTL); err != nil {
-		a.toSentry(c, "register", "db_token", sentry.LevelError, err)
+	if err := a.storeRefreshToken(ctx, createdUser.ID, tokenPair.RefreshToken, tokenPair.RefreshTokenExpiresAt); err != nil {
+		a.report(c, "register", "db_token", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
-	c.JSON(http.StatusCreated, TokenResponse{AccessToken: accessToken, RefreshToken: refreshToken})
+	c.JSON(http.StatusCreated, TokenResponse{
+		AccessToken:  tokenPair.AccessToken,
+		RefreshToken: tokenPair.RefreshToken,
+	})
 }
 
 func (a *App) HandleLogin(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		a.toSentry(c, "login", "unmarshal", sentry.LevelError, err)
+		a.report(c, "login", "unmarshal", slog.LevelError, err)
 		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
 	}
@@ -179,7 +177,7 @@ func (a *App) HandleLogin(c *gin.Context) {
 			writeError(c, http.StatusUnauthorized, "invalid_credentials", nil)
 			return
 		}
-		a.toSentry(c, "login", "db", sentry.LevelError, err)
+		a.report(c, "login", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_login_error", nil)
 		return
 	}
@@ -189,26 +187,29 @@ func (a *App) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	accessToken, refreshToken, err := a.jwt.GenerateTokens(c.Request.Context(), user.ID, user.IsAdmin)
+	tokenPair, err := a.jwt.IssuePair(user, time.Now().UTC())
 	if err != nil {
-		a.toSentry(c, "login", "jwt", sentry.LevelError, err)
+		a.report(c, "login", "jwt", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
-	if err := a.storeRefreshToken(c.Request.Context(), user.ID, refreshToken, refreshTokenTTL); err != nil {
-		a.toSentry(c, "login", "db_token", sentry.LevelError, err)
+	if err := a.storeRefreshToken(c.Request.Context(), user.ID, tokenPair.RefreshToken, tokenPair.RefreshTokenExpiresAt); err != nil {
+		a.report(c, "login", "db_token", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
-	c.JSON(http.StatusOK, TokenResponse{AccessToken: accessToken, RefreshToken: refreshToken})
+	c.JSON(http.StatusOK, TokenResponse{
+		AccessToken:  tokenPair.AccessToken,
+		RefreshToken: tokenPair.RefreshToken,
+	})
 }
 
 func (a *App) HandleRefresh(c *gin.Context) {
 	var req RefreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		a.toSentry(c, "refresh", "unmarshal", sentry.LevelError, err)
+		a.report(c, "refresh", "unmarshal", slog.LevelError, err)
 		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
 	}
@@ -220,31 +221,13 @@ func (a *App) HandleRefresh(c *gin.Context) {
 		return
 	}
 
-	claims, err := a.jwt.ParseRefreshToken(c.Request.Context(), req.RefreshToken)
-	if err != nil {
-		if !errors.Is(err, jwt.ErrExpiredToken) && !errors.Is(err, jwt.ErrInvalidToken) {
-			a.toSentry(c, "refresh", "jwt", sentry.LevelError, err)
-		}
-		var errCode string
-		switch {
-		case errors.Is(err, jwt.ErrExpiredToken):
-			errCode = "expired_token"
-		case errors.Is(err, jwt.ErrInvalidToken):
-			errCode = "invalid_token"
-		default:
-			errCode = "unauthorized"
-		}
-		writeError(c, http.StatusUnauthorized, errCode, nil)
-		return
-	}
-
 	storedToken, err := a.db.GetRefreshTokenByToken(c.Request.Context(), []byte(req.RefreshToken))
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			writeError(c, http.StatusUnauthorized, "invalid_token", nil)
 			return
 		}
-		a.toSentry(c, "refresh", "db", sentry.LevelError, err)
+		a.report(c, "refresh", "db", slog.LevelError, err)
 		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
 	}
@@ -255,9 +238,9 @@ func (a *App) HandleRefresh(c *gin.Context) {
 	// through full authentication.
 	if storedToken.RevokedAt != nil {
 		if delErr := a.db.DeleteRefreshTokensByUserID(c.Request.Context(), storedToken.UserID); delErr != nil {
-			a.toSentry(c, "refresh", "db_revoke_all", sentry.LevelError, delErr)
+			a.report(c, "refresh", "db_revoke_all", slog.LevelError, delErr)
 		}
-		a.toSentry(c, "refresh", "reuse_detected", sentry.LevelWarning,
+		a.report(c, "refresh", "reuse_detected", slog.LevelWarn,
 			errors.New("revoked refresh token replayed"))
 		writeError(c, http.StatusUnauthorized, "invalid_token", nil)
 		return
@@ -268,16 +251,27 @@ func (a *App) HandleRefresh(c *gin.Context) {
 		return
 	}
 
-	// Rotate: issue a fresh (access, refresh) pair and retire the presented one.
-	newAccess, newRefresh, err := a.jwt.GenerateTokens(c.Request.Context(), claims.Subject, claims.IsAdmin)
+	user, err := a.db.GetUserByID(c.Request.Context(), storedToken.UserID)
 	if err != nil {
-		a.toSentry(c, "refresh", "jwt_generate", sentry.LevelError, err)
+		if errors.Is(err, sqldb.ErrDBNotFound) {
+			writeError(c, http.StatusUnauthorized, "invalid_token", nil)
+			return
+		}
+		a.report(c, "refresh", "db_user", slog.LevelError, err)
+		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
+	// Rotate: issue a fresh (access, refresh) pair and retire the presented one.
+	tokenPair, err := a.jwt.IssuePair(user, time.Now().UTC())
+	if err != nil {
+		a.report(c, "refresh", "jwt_generate", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
 
-	if err := a.storeRefreshToken(c.Request.Context(), storedToken.UserID, newRefresh, refreshTokenTTL); err != nil {
-		a.toSentry(c, "refresh", "db_token", sentry.LevelError, err)
+	if err := a.storeRefreshToken(c.Request.Context(), storedToken.UserID, tokenPair.RefreshToken, tokenPair.RefreshTokenExpiresAt); err != nil {
+		a.report(c, "refresh", "db_token", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
 	}
@@ -285,10 +279,13 @@ func (a *App) HandleRefresh(c *gin.Context) {
 	if err := a.db.RevokeRefreshToken(c.Request.Context(), storedToken.ID); err != nil {
 		// Old token survived as un-revoked: surface for ops but don't fail the
 		// request — the new token is already issued and stored.
-		a.toSentry(c, "refresh", "db_revoke", sentry.LevelWarning, err)
+		a.report(c, "refresh", "db_revoke", slog.LevelWarn, err)
 	}
 
-	c.JSON(http.StatusOK, TokenResponse{AccessToken: newAccess, RefreshToken: newRefresh})
+	c.JSON(http.StatusOK, TokenResponse{
+		AccessToken:  tokenPair.AccessToken,
+		RefreshToken: tokenPair.RefreshToken,
+	})
 }
 
 func validateRegisterInput(req models.NewUser) (string, map[string]string) {
@@ -445,7 +442,7 @@ type ResetPasswordRequest struct {
 // The response body is intentionally identical for "user exists" and "user
 // does not exist" — including on internal failures — so the endpoint cannot
 // be used to probe for registered emails. Operational failures are reported
-// to Sentry instead of the client.
+// through structured logs instead of the client.
 func (a *App) HandleForgotPassword(c *gin.Context) {
 	const genericMessage = "If the email exists, a password reset link has been sent"
 	respondGeneric := func() {
@@ -463,7 +460,7 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 	user, err := a.db.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil {
 		if !errors.Is(err, sqldb.ErrDBNotFound) {
-			a.toSentry(c, "forgot_password", "db", sentry.LevelError, err)
+			a.report(c, "forgot_password", "db", slog.LevelError, err)
 		}
 		respondGeneric()
 		return
@@ -471,7 +468,7 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 
 	token, err := generateSecureToken(resetTokenLength)
 	if err != nil {
-		a.toSentry(c, "forgot_password", "token_generation", sentry.LevelError, err)
+		a.report(c, "forgot_password", "token_generation", slog.LevelError, err)
 		respondGeneric()
 		return
 	}
@@ -481,13 +478,13 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 		Token:     token,
 		ExpiresAt: time.Now().Add(resetTokenTTL),
 	}); err != nil {
-		a.toSentry(c, "forgot_password", "db", sentry.LevelError, err)
+		a.report(c, "forgot_password", "db", slog.LevelError, err)
 		respondGeneric()
 		return
 	}
 
 	if err := a.mailtrap.SendPasswordResetEmail(user.Email, token); err != nil {
-		a.toSentry(c, "forgot_password", "email", sentry.LevelError, err)
+		a.report(c, "forgot_password", "email", slog.LevelError, err)
 	}
 
 	respondGeneric()
@@ -537,7 +534,7 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 			writeError(c, http.StatusBadRequest, "invalid_or_expired_reset_token", nil)
 			return
 		}
-		a.toSentry(c, "reset_password", "db", sentry.LevelError, err)
+		a.report(c, "reset_password", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_reset_password_error", nil)
 		return
 	}
@@ -545,7 +542,7 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 	// Hash new password
 	hashedPassword, err := generateFromPassword([]byte(req.Password), bcryptCost)
 	if err != nil {
-		a.toSentry(c, "reset_password", "bcrypt", sentry.LevelError, err)
+		a.report(c, "reset_password", "bcrypt", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_hash_error", nil)
 		return
 	}
@@ -553,7 +550,7 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 	// Update user password
 	err = a.db.UpdateUserPassword(c.Request.Context(), resetToken.UserID, hashedPassword)
 	if err != nil {
-		a.toSentry(c, "reset_password", "db", sentry.LevelError, err)
+		a.report(c, "reset_password", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_reset_password_error", nil)
 		return
 	}
@@ -562,7 +559,7 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 	err = a.db.DeleteRefreshTokensByUserID(c.Request.Context(), resetToken.UserID)
 	if err != nil {
 		// Log error but don't fail the request
-		a.toSentry(c, "reset_password", "db", sentry.LevelWarning, err)
+		a.report(c, "reset_password", "db", slog.LevelWarn, err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

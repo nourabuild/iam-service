@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -11,7 +12,6 @@ import (
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 	"github.com/nourabuild/iam-service/internal/services/kafka"
-	"github.com/nourabuild/iam-service/internal/services/sentry"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -34,6 +34,7 @@ func userUpdatedOutbox(requestID string) sqldb.OutboxEventFunc {
 				Phone:         user.Phone,
 				AvatarPhotoID: user.AvatarPhotoID,
 				IsAdmin:       user.IsAdmin,
+				Role:          user.Role,
 				OccurredAt:    time.Now().UTC(),
 			},
 			Headers: outboxHeaders(requestID, user.ID),
@@ -69,7 +70,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 			writeError(c, http.StatusConflict, "account_already_taken", nil)
 			return
 		}
-		a.toSentry(c, "update_account", "db", sentry.LevelError, err)
+		a.report(c, "update_account", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_update_account_error", nil)
 		return
 	}
@@ -103,7 +104,7 @@ func (a *App) HandleMe(c *gin.Context) {
 
 	user, err := a.db.GetUserByID(ctx, userID)
 	if err != nil {
-		a.toSentry(c, "whoami", "db", sentry.LevelError, err)
+		a.report(c, "whoami", "db", slog.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			writeError(c, http.StatusUnauthorized, "user_not_found", nil)
 			return
@@ -120,7 +121,7 @@ func (a *App) HandleListUsers(c *gin.Context) {
 
 	users, err := a.db.ListUsers(ctx)
 	if err != nil {
-		a.toSentry(c, "list_users", "db", sentry.LevelError, err)
+		a.report(c, "list_users", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_retrieve_users_error", nil)
 		return
 	}
@@ -139,7 +140,7 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 
 	user, err := a.db.PromoteUserToAdmin(ctx, userID, userUpdatedOutbox(c.GetHeader("X-Request-ID")))
 	if err != nil {
-		a.toSentry(c, "promote_user", "db", sentry.LevelError, err)
+		a.report(c, "promote_user", "db", slog.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			// The *target* user doesn't exist; the caller's auth is fine.
 			writeError(c, http.StatusNotFound, "user_not_found", nil)
@@ -161,7 +162,7 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 
 	user, err := a.db.DemoteUserFromAdmin(c.Request.Context(), userID, userUpdatedOutbox(c.GetHeader("X-Request-ID")))
 	if err != nil {
-		a.toSentry(c, "demote_user", "db", sentry.LevelError, err)
+		a.report(c, "demote_user", "db", slog.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			// The *target* user doesn't exist; the caller's auth is fine.
 			writeError(c, http.StatusNotFound, "user_not_found", nil)
@@ -219,7 +220,7 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	// Get user from database
 	user, err := a.db.GetUserByID(c.Request.Context(), userID)
 	if err != nil {
-		a.toSentry(c, "change_password", "db", sentry.LevelError, err)
+		a.report(c, "change_password", "db", slog.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			writeError(c, http.StatusUnauthorized, "user_not_found", nil)
 			return
@@ -241,7 +242,7 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	// Hash new password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcryptCost)
 	if err != nil {
-		a.toSentry(c, "change_password", "bcrypt", sentry.LevelError, err)
+		a.report(c, "change_password", "bcrypt", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_hash_error", nil)
 		return
 	}
@@ -249,7 +250,7 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	// Update password
 	err = a.db.UpdateUserPassword(c.Request.Context(), userID, hashedPassword)
 	if err != nil {
-		a.toSentry(c, "change_password", "db", sentry.LevelError, err)
+		a.report(c, "change_password", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_update_password_error", nil)
 		return
 	}
@@ -258,7 +259,7 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	err = a.db.DeleteRefreshTokensByUserID(c.Request.Context(), userID)
 	if err != nil {
 		// Log error but don't fail the request
-		a.toSentry(c, "change_password", "db", sentry.LevelWarning, err)
+		a.report(c, "change_password", "db", slog.LevelWarn, err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

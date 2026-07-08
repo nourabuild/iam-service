@@ -5,12 +5,10 @@ import (
 	"github.com/nourabuild/iam-service/internal/services/jwt"
 	"github.com/nourabuild/iam-service/internal/services/kafka"
 	"github.com/nourabuild/iam-service/internal/services/mailtrap"
-	"github.com/nourabuild/iam-service/internal/services/sentry"
 )
 
 type App struct {
 	db       sqldb.Service
-	sentry   sentry.SentryRepository
 	jwt      jwt.TokenRepository
 	mailtrap mailtrap.MailtrapRepository
 	kafka    kafka.KafkaRepository
@@ -18,14 +16,12 @@ type App struct {
 
 func NewApp(
 	db sqldb.Service,
-	sentry sentry.SentryRepository,
 	jwt jwt.TokenRepository,
 	mailtrap mailtrap.MailtrapRepository,
 	kafka kafka.KafkaRepository,
 ) *App {
 	return &App{
 		db:       db,
-		sentry:   sentry,
 		jwt:      jwt,
 		mailtrap: mailtrap,
 		kafka:    kafka,

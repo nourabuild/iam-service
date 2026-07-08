@@ -1,163 +1,170 @@
 package jwt
 
 import (
-	"context"
-	"errors"
-	"os"
+	"bytes"
 	"testing"
 	"time"
 
 	gojwt "github.com/golang-jwt/jwt/v5"
+	"github.com/nourabuild/iam-service/internal/sdk/config"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
 const (
-	testAccessSecret  = "test-access-secret-0123456789abcdef"
-	testRefreshSecret = "test-refresh-secret-0123456789abcdef"
+	testSecret = "test-access-secret-0123456789abcdef"
+	testIssuer = "noura-iam-service-test"
 )
-
-func TestMain(m *testing.M) {
-	_ = os.Setenv("JWT_ACCESS_TOKEN_SECRET", testAccessSecret)
-	_ = os.Setenv("JWT_REFRESH_TOKEN_SECRET", testRefreshSecret)
-	os.Exit(m.Run())
-}
 
 func mustService(t *testing.T) *TokenService {
 	t.Helper()
-	svc, err := NewTokenService()
-	if err != nil {
-		t.Fatalf("NewTokenService() returned error: %v", err)
+
+	return NewTokenService(config.AuthConfig{
+		JWTSecret:       testSecret,
+		Issuer:          testIssuer,
+		AccessTokenTTL:  15 * time.Minute,
+		RefreshTokenTTL: 30 * 24 * time.Hour,
+	})
+}
+
+func testUser(id string, role models.Role) models.User {
+	return models.User{
+		ID:      id,
+		IsAdmin: role == models.RoleAdmin,
+		Role:    role,
 	}
-	return svc
+}
+
+func parseClaims(t *testing.T, svc *TokenService, tokenString string) *Claims {
+	t.Helper()
+
+	claims := new(Claims)
+	token, err := gojwt.ParseWithClaims(tokenString, claims, func(token *gojwt.Token) (any, error) {
+		return svc.secret, nil
+	})
+	if err != nil {
+		t.Fatalf("parsing token claims: %v", err)
+	}
+	if !token.Valid {
+		t.Fatal("expected token to be valid")
+	}
+	return claims
 }
 
 func TestNewTokenService(t *testing.T) {
-	t.Run("success", func(t *testing.T) {
-		svc := mustService(t)
-		if svc.Issuer != issuer {
-			t.Fatalf("expected issuer %q, got %q", issuer, svc.Issuer)
-		}
-	})
+	svc := mustService(t)
 
-	t.Run("missing access secret", func(t *testing.T) {
-		t.Setenv("JWT_ACCESS_TOKEN_SECRET", "")
-		if _, err := NewTokenService(); err == nil {
-			t.Fatal("expected error for missing access secret, got nil")
-		}
-	})
-
-	t.Run("missing refresh secret", func(t *testing.T) {
-		t.Setenv("JWT_REFRESH_TOKEN_SECRET", "")
-		if _, err := NewTokenService(); err == nil {
-			t.Fatal("expected error for missing refresh secret, got nil")
-		}
-	})
-
-	t.Run("short secret rejected", func(t *testing.T) {
-		t.Setenv("JWT_ACCESS_TOKEN_SECRET", "too-short")
-		if _, err := NewTokenService(); err == nil {
-			t.Fatal("expected error for short secret, got nil")
-		}
-	})
-
-	t.Run("whitespace-only secret rejected", func(t *testing.T) {
-		t.Setenv("JWT_ACCESS_TOKEN_SECRET", "                                        ")
-		if _, err := NewTokenService(); err == nil {
-			t.Fatal("expected error for whitespace secret, got nil")
-		}
-	})
+	if string(svc.secret) != testSecret {
+		t.Fatalf("expected configured secret to be stored")
+	}
+	if svc.issuer != testIssuer {
+		t.Fatalf("expected issuer %q, got %q", testIssuer, svc.issuer)
+	}
+	if svc.accessTokenTTL != 15*time.Minute {
+		t.Fatalf("expected access TTL 15m, got %s", svc.accessTokenTTL)
+	}
+	if svc.refreshTokenTTL != 30*24*time.Hour {
+		t.Fatalf("expected refresh TTL 720h, got %s", svc.refreshTokenTTL)
+	}
 }
 
-func TestGenerateAndParseRoundTrip(t *testing.T) {
+func TestIssuePairAndParseAccessToken(t *testing.T) {
 	svc := mustService(t)
-	ctx := context.Background()
+	now := time.Now().UTC()
 
-	access, refresh, err := svc.GenerateTokens(ctx, "user-123", true)
+	pair, err := svc.IssuePair(testUser("user-123", models.RoleAdmin), now)
 	if err != nil {
-		t.Fatalf("GenerateTokens returned error: %v", err)
+		t.Fatalf("IssuePair returned error: %v", err)
 	}
-	if access == "" || refresh == "" {
+	if pair.AccessToken == "" || pair.RefreshToken == "" {
 		t.Fatal("expected non-empty token pair")
 	}
+	if pair.AccessTokenExpiresAt.Before(now) || pair.AccessTokenExpiresAt.After(now.Add(svc.accessTokenTTL).Add(time.Second)) {
+		t.Fatalf("access token expiry not based on configured TTL: %s", pair.AccessTokenExpiresAt)
+	}
+	if pair.RefreshTokenExpiresAt.Before(now) || pair.RefreshTokenExpiresAt.After(now.Add(svc.refreshTokenTTL).Add(time.Second)) {
+		t.Fatalf("refresh token expiry not based on configured TTL: %s", pair.RefreshTokenExpiresAt)
+	}
+	if !bytes.Equal(HashRefreshToken(pair.RefreshToken), pair.RefreshTokenHash) {
+		t.Fatal("refresh token hash does not match refresh token")
+	}
 
-	claims, err := svc.ParseAccessToken(ctx, access)
+	principal, err := svc.ParseAccessToken(pair.AccessToken)
 	if err != nil {
 		t.Fatalf("ParseAccessToken returned error: %v", err)
 	}
+	if principal.ID != "user-123" {
+		t.Errorf("expected principal ID user-123, got %q", principal.ID)
+	}
+	if principal.Role != models.RoleAdmin {
+		t.Errorf("expected role admin, got %q", principal.Role)
+	}
+
+	claims := parseClaims(t, svc, pair.AccessToken)
 	if claims.Subject != "user-123" {
 		t.Errorf("expected subject user-123, got %q", claims.Subject)
 	}
 	if !claims.IsAdmin {
-		t.Error("expected is_admin claim to be true")
+		t.Error("expected is_admin claim to remain true")
 	}
-	if claims.Issuer != issuer {
-		t.Errorf("expected issuer %q, got %q", issuer, claims.Issuer)
+	if claims.Role != string(models.RoleAdmin) {
+		t.Errorf("expected role claim admin, got %q", claims.Role)
 	}
-
-	refreshClaims, err := svc.ParseRefreshToken(ctx, refresh)
-	if err != nil {
-		t.Fatalf("ParseRefreshToken returned error: %v", err)
-	}
-	if refreshClaims.Subject != "user-123" {
-		t.Errorf("expected refresh subject user-123, got %q", refreshClaims.Subject)
+	if claims.Issuer != testIssuer {
+		t.Errorf("expected issuer %q, got %q", testIssuer, claims.Issuer)
 	}
 }
 
-// TestTokensAreUnique is the regression test for same-second token collisions:
-// without a random jti, two tokens for the same subject issued within one
-// second are byte-identical, which silently breaks refresh-token rotation and
-// reuse detection.
 func TestTokensAreUnique(t *testing.T) {
 	svc := mustService(t)
-	ctx := context.Background()
+	user := testUser("user-123", models.RoleUser)
+	now := time.Now().UTC()
 
-	access1, refresh1, err := svc.GenerateTokens(ctx, "user-123", false)
+	pair1, err := svc.IssuePair(user, now)
 	if err != nil {
-		t.Fatalf("GenerateTokens returned error: %v", err)
+		t.Fatalf("IssuePair returned error: %v", err)
 	}
-	access2, refresh2, err := svc.GenerateTokens(ctx, "user-123", false)
+	pair2, err := svc.IssuePair(user, now)
 	if err != nil {
-		t.Fatalf("GenerateTokens returned error: %v", err)
+		t.Fatalf("IssuePair returned error: %v", err)
 	}
 
-	if access1 == access2 {
+	if pair1.AccessToken == pair2.AccessToken {
 		t.Error("two access tokens issued back-to-back are identical; jti missing?")
 	}
-	if refresh1 == refresh2 {
-		t.Error("two refresh tokens issued back-to-back are identical; jti missing?")
+	if pair1.RefreshToken == pair2.RefreshToken {
+		t.Error("two refresh tokens issued back-to-back are identical")
+	}
+}
+
+func TestRoleFallsBackToIsAdmin(t *testing.T) {
+	svc := mustService(t)
+	user := models.User{ID: "user-123", IsAdmin: true}
+
+	token, _, err := svc.IssueAccessToken(user, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("IssueAccessToken returned error: %v", err)
+	}
+
+	principal, err := svc.ParseAccessToken(token)
+	if err != nil {
+		t.Fatalf("ParseAccessToken returned error: %v", err)
+	}
+	if principal.Role != models.RoleAdmin {
+		t.Fatalf("expected role admin fallback, got %q", principal.Role)
 	}
 }
 
 func TestParseExpiredToken(t *testing.T) {
 	svc := mustService(t)
-	svc.AccessTokenExpiry = -time.Minute
+	svc.accessTokenTTL = -time.Minute
 
-	token, err := svc.GenerateAccessToken(context.Background(), "user-123", false)
+	token, _, err := svc.IssueAccessToken(testUser("user-123", models.RoleUser), time.Now().UTC())
 	if err != nil {
-		t.Fatalf("GenerateAccessToken returned error: %v", err)
+		t.Fatalf("IssueAccessToken returned error: %v", err)
 	}
 
-	_, err = svc.ParseAccessToken(context.Background(), token)
-	if !errors.Is(err, ErrExpiredToken) {
-		t.Fatalf("expected ErrExpiredToken, got %v", err)
-	}
-}
-
-func TestCrossSecretRejection(t *testing.T) {
-	svc := mustService(t)
-	ctx := context.Background()
-
-	access, refresh, err := svc.GenerateTokens(ctx, "user-123", false)
-	if err != nil {
-		t.Fatalf("GenerateTokens returned error: %v", err)
-	}
-
-	// A refresh token must never be accepted as an access token, and vice
-	// versa: they are signed with different secrets.
-	if _, err := svc.ParseAccessToken(ctx, refresh); !errors.Is(err, ErrInvalidToken) {
-		t.Errorf("refresh token accepted as access token; want ErrInvalidToken, got %v", err)
-	}
-	if _, err := svc.ParseRefreshToken(ctx, access); !errors.Is(err, ErrInvalidToken) {
-		t.Errorf("access token accepted as refresh token; want ErrInvalidToken, got %v", err)
+	if _, err := svc.ParseAccessToken(token); err == nil {
+		t.Fatal("expected error parsing expired token, got nil")
 	}
 }
 
@@ -165,15 +172,15 @@ func TestWrongSignatureRejected(t *testing.T) {
 	svc := mustService(t)
 
 	other := *svc
-	other.AccessTokenSecretKey = []byte("a-completely-different-secret-key-value")
+	other.secret = []byte("a-completely-different-secret-key-value")
 
-	token, err := other.GenerateAccessToken(context.Background(), "user-123", false)
+	token, _, err := other.IssueAccessToken(testUser("user-123", models.RoleUser), time.Now().UTC())
 	if err != nil {
-		t.Fatalf("GenerateAccessToken returned error: %v", err)
+		t.Fatalf("IssueAccessToken returned error: %v", err)
 	}
 
-	if _, err := svc.ParseAccessToken(context.Background(), token); !errors.Is(err, ErrInvalidToken) {
-		t.Fatalf("expected ErrInvalidToken for wrong signature, got %v", err)
+	if _, err := svc.ParseAccessToken(token); err == nil {
+		t.Fatal("expected error for wrong signature, got nil")
 	}
 }
 
@@ -181,9 +188,11 @@ func TestAlgNoneRejected(t *testing.T) {
 	svc := mustService(t)
 
 	claims := Claims{
+		Role:      string(models.RoleUser),
+		TokenType: accessTokenType,
 		RegisteredClaims: gojwt.RegisteredClaims{
 			Subject:   "user-123",
-			Issuer:    issuer,
+			Issuer:    testIssuer,
 			ExpiresAt: gojwt.NewNumericDate(time.Now().Add(time.Hour)),
 		},
 	}
@@ -193,7 +202,7 @@ func TestAlgNoneRejected(t *testing.T) {
 		t.Fatalf("signing alg=none token: %v", err)
 	}
 
-	if _, err := svc.ParseAccessToken(context.Background(), token); err == nil {
+	if _, err := svc.ParseAccessToken(token); err == nil {
 		t.Fatal("alg=none token was accepted; expected rejection")
 	}
 }
@@ -202,35 +211,25 @@ func TestIssuerMismatchRejected(t *testing.T) {
 	svc := mustService(t)
 
 	other := *svc
-	other.Issuer = "some-other-service"
+	other.issuer = "some-other-service"
 
-	token, err := other.GenerateAccessToken(context.Background(), "user-123", false)
+	token, _, err := other.IssueAccessToken(testUser("user-123", models.RoleUser), time.Now().UTC())
 	if err != nil {
-		t.Fatalf("GenerateAccessToken returned error: %v", err)
+		t.Fatalf("IssueAccessToken returned error: %v", err)
 	}
 
-	if _, err := svc.ParseAccessToken(context.Background(), token); err == nil {
+	if _, err := svc.ParseAccessToken(token); err == nil {
 		t.Fatal("token with wrong issuer was accepted; expected rejection")
 	}
 }
 
 func TestParseInvalidInput(t *testing.T) {
 	svc := mustService(t)
-	ctx := context.Background()
 
-	if _, err := svc.ParseAccessToken(ctx, ""); !errors.Is(err, ErrTokenNotFound) {
-		t.Errorf("expected ErrTokenNotFound for empty token, got %v", err)
+	if _, err := svc.ParseAccessToken(""); err == nil {
+		t.Error("expected error for empty token, got nil")
 	}
-	if _, err := svc.ParseAccessToken(ctx, "not-a-jwt"); !errors.Is(err, ErrInvalidToken) {
-		t.Errorf("expected ErrInvalidToken for malformed token, got %v", err)
-	}
-}
-
-func TestGenerateWithEmptySecret(t *testing.T) {
-	svc := mustService(t)
-	svc.AccessTokenSecretKey = nil
-
-	if _, err := svc.GenerateAccessToken(context.Background(), "user-123", false); err == nil {
-		t.Fatal("expected error generating token with empty secret, got nil")
+	if _, err := svc.ParseAccessToken("not-a-jwt"); err == nil {
+		t.Error("expected error for malformed token, got nil")
 	}
 }

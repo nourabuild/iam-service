@@ -68,7 +68,7 @@ func (m *mockService) CreateUser(ctx context.Context, user models.NewUser, event
 		createdUserID = "db_create_refresh_token_error"
 	}
 
-	created := models.User{ID: createdUserID}
+	created := models.User{ID: createdUserID, Role: models.RoleUser}
 	// Exercise the event-building closure the way the real service would.
 	if eventFn != nil {
 		_ = eventFn(created)
@@ -117,24 +117,28 @@ func (m *mockService) ConsumePasswordResetToken(ctx context.Context, token strin
 // GetRefreshTokenByToken implements [Service].
 func (m *mockService) GetRefreshTokenByToken(ctx context.Context, token []byte) (models.RefreshToken, error) {
 	stringToken := string(token)
-	if stringToken == "db_get_refresh_token_error" {
+	if stringToken == "db_get_refresh_token_error" || stringToken == "jwt_parse_refresh_error" {
 		return models.RefreshToken{}, errors.New("error getting refresh token")
 	}
-	if stringToken == "missing_refresh_token" {
+	if stringToken == "missing_refresh_token" || stringToken == "jwt_invalid_refresh_token" {
 		return models.RefreshToken{}, ErrDBNotFound
 	}
 
 	now := time.Now().UTC()
+	userID := "user-id"
+	if stringToken == "jwt_generate_access_error_token" {
+		userID = "jwt_generate_access_error_token"
+	}
 	refreshToken := models.RefreshToken{
 		ID:        "refresh-token-id",
-		UserID:    "user-id",
+		UserID:    userID,
 		Token:     token,
 		CreatedAt: now,
 		UpdatedAt: now,
 		ExpiresAt: now.Add(time.Hour),
 	}
 
-	if stringToken == "expired_refresh_token" {
+	if stringToken == "expired_refresh_token" || stringToken == "jwt_expired_refresh_token" {
 		refreshToken.ExpiresAt = now.Add(-time.Hour)
 	}
 	if stringToken == "revoked_refresh_token" {
@@ -158,6 +162,7 @@ func (m *mockService) GetUserByAccount(ctx context.Context, account string) (mod
 		ID:      "user-id",
 		Account: account,
 		Email:   "user@example.com",
+		Role:    models.RoleUser,
 		// This is a dummy user for testing purposes. The password is "password" hashed with bcrypt.
 		Password: []byte("$2a$10$Vt2o6/8XZ46Ga5QIXQGDUuW8fBES0LtU7EKi2TlCSnk2kGkN.a6XK"),
 	}, nil
@@ -183,6 +188,7 @@ func (m *mockService) GetUserByEmail(ctx context.Context, email string) (models.
 	return models.User{
 		ID:    userID,
 		Email: email,
+		Role:  models.RoleUser,
 		// This is a dummy user for testing purposes. The password is "password" hashed with bcrypt.
 		Password: []byte("$2a$10$Vt2o6/8XZ46Ga5QIXQGDUuW8fBES0LtU7EKi2TlCSnk2kGkN.a6XK"),
 	}, nil
@@ -201,6 +207,7 @@ func (m *mockService) GetUserByID(ctx context.Context, userID string) (models.Us
 		ID:      userID,
 		Account: "test-user",
 		Email:   "user@example.com",
+		Role:    models.RoleUser,
 		// This is a dummy user for testing purposes. The password is "password" hashed with bcrypt.
 		Password: []byte("$2a$10$Vt2o6/8XZ46Ga5QIXQGDUuW8fBES0LtU7EKi2TlCSnk2kGkN.a6XK"),
 	}, nil
@@ -216,7 +223,7 @@ func (m *mockService) Health() map[string]string {
 
 // ListUsers implements [Service].
 func (m *mockService) ListUsers(ctx context.Context) ([]models.User, error) {
-	return []models.User{{ID: "user-id", Email: "user@example.com", Account: "test-user"}}, nil
+	return []models.User{{ID: "user-id", Email: "user@example.com", Account: "test-user", Role: models.RoleUser}}, nil
 }
 
 // PromoteUserToAdmin implements [Service].
@@ -228,7 +235,7 @@ func (m *mockService) PromoteUserToAdmin(ctx context.Context, userID string, eve
 		return models.User{}, ErrDBNotFound
 	}
 
-	user := models.User{ID: userID, IsAdmin: true}
+	user := models.User{ID: userID, IsAdmin: true, Role: models.RoleAdmin}
 	if eventFn != nil {
 		_ = eventFn(user)
 	}
@@ -244,7 +251,7 @@ func (m *mockService) DemoteUserFromAdmin(ctx context.Context, userID string, ev
 		return models.User{}, ErrDBNotFound
 	}
 
-	user := models.User{ID: userID, IsAdmin: false}
+	user := models.User{ID: userID, IsAdmin: false, Role: models.RoleUser}
 	if eventFn != nil {
 		_ = eventFn(user)
 	}
@@ -300,6 +307,7 @@ func (m *mockService) UpdateUser(ctx context.Context, userID string, update mode
 		City:      update.City,
 		Phone:     update.Phone,
 		IsAdmin:   false,
+		Role:      models.RoleUser,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}

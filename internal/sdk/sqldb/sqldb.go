@@ -218,6 +218,7 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (models.User, 
 			phone,
 			avatar_photo_id,
 			is_admin,
+			role,
 			created_at,
 			updated_at
 		FROM auth.users
@@ -250,6 +251,7 @@ func (s *service) GetUserByEmail(ctx context.Context, email string) (models.User
 			phone,
 			avatar_photo_id,
 			is_admin,
+			role,
 			created_at,
 			updated_at
 		FROM auth.users
@@ -282,6 +284,7 @@ func (s *service) GetUserByAccount(ctx context.Context, account string) (models.
 			phone,
 			avatar_photo_id,
 			is_admin,
+			role,
 			created_at,
 			updated_at
 		FROM auth.users
@@ -305,7 +308,7 @@ func (s *service) CreateUser(ctx context.Context, newUser models.NewUser, eventF
 		const query = `
 			INSERT INTO auth.users (name, account, email, password, is_admin)
 			VALUES ($1, $2, $3, $4, $5)
-			RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
+			RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, role, created_at, updated_at
 		`
 
 		user, err := scanUser(q.QueryRowContext(ctx, query,
@@ -341,6 +344,7 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 			phone,
 			avatar_photo_id,
 			is_admin,
+			role,
 			created_at,
 			updated_at
 		FROM auth.users
@@ -382,7 +386,7 @@ func (s *service) UpdateUser(ctx context.Context, userID string, update models.U
 			    phone   = $6,
 			    updated_at = CURRENT_TIMESTAMP
 			WHERE id = $7
-			RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
+			RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, role, created_at, updated_at
 		`
 
 		user, err := scanUser(q.QueryRowContext(ctx, query,
@@ -423,12 +427,13 @@ func (s *service) setAdminFlag(ctx context.Context, userID string, isAdmin bool,
 		const query = `
 			UPDATE auth.users
 			SET is_admin = $1,
+			    role = $2,
 			    updated_at = CURRENT_TIMESTAMP
-			WHERE id = $2
-			RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
+			WHERE id = $3
+			RETURNING id::text, name, account, email, password, bio, dob, city, phone, avatar_photo_id, is_admin, role, created_at, updated_at
 		`
 
-		user, err := scanUser(q.QueryRowContext(ctx, query, isAdmin, userID))
+		user, err := scanUser(q.QueryRowContext(ctx, query, isAdmin, roleFromAdmin(isAdmin), userID))
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return models.User{}, ErrDBNotFound
@@ -700,6 +705,7 @@ func scanUser(scanner rowScanner) (models.User, error) {
 		&phone,
 		&avatarPhotoID,
 		&user.IsAdmin,
+		&user.Role,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	); err != nil {
@@ -713,6 +719,13 @@ func scanUser(scanner rowScanner) (models.User, error) {
 	user.AvatarPhotoID = Int32Ptr(avatarPhotoID)
 
 	return user, nil
+}
+
+func roleFromAdmin(isAdmin bool) models.Role {
+	if isAdmin {
+		return models.RoleAdmin
+	}
+	return models.RoleUser
 }
 
 func scanRefreshToken(scanner rowScanner) (models.RefreshToken, error) {

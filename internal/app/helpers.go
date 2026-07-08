@@ -2,13 +2,14 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/services/kafka"
-	"github.com/nourabuild/iam-service/internal/services/sentry"
+	sentrysvc "github.com/nourabuild/iam-service/internal/services/sentry"
 )
 
 func writeError(c *gin.Context, status int, errCode string, details map[string]string) {
@@ -30,8 +31,7 @@ func normalizeEmail(email string) string {
 }
 
 // =============================================================================
-func (a *App) storeRefreshToken(ctx context.Context, userID, refreshToken string, ttl time.Duration) error {
-	expiresAt := time.Now().UTC().Add(ttl)
+func (a *App) storeRefreshToken(ctx context.Context, userID, refreshToken string, expiresAt time.Time) error {
 	_, err := a.db.CreateRefreshToken(ctx, models.NewRefreshToken{
 		UserID:    userID,
 		Token:     []byte(refreshToken),
@@ -53,21 +53,31 @@ func outboxHeaders(requestID, fallback string) map[string]string {
 	return map[string]string{kafka.HeaderCorrelationID: correlationID}
 }
 
-// =============================================================================
-func (a *App) toSentry(c *gin.Context, handler, errType string, level sentry.Level, err error) {
-	a.toSentryBackground(handler, errType, level, err, c.GetHeader("X-Request-ID"))
+func (a *App) report(c *gin.Context, handler, errType string, level slog.Level, err error) {
+	requestID := c.GetHeader("X-Request-ID")
+	if value := c.GetString("request_id"); value != "" {
+		requestID = value
+	}
+	a.reportBackground(c.Request.Context(), handler, errType, level, err, requestID)
 }
 
-// toSentryBackground reports an error without touching the request context,
-// so it is safe to call from goroutines that outlive the handler.
-func (a *App) toSentryBackground(handler, errType string, level sentry.Level, err error, requestID string) {
-	a.sentry.WithScope(func(scope *sentry.Scope) {
-		scope.SetTag("handler", handler)
-		scope.SetExtra("error_type", errType)
-		scope.SetLevel(level)
-		if requestID != "" {
-			scope.SetTag("request_id", requestID)
-		}
-		a.sentry.CaptureException(err)
-	})
+func (a *App) reportBackground(ctx context.Context, handler, errType string, level slog.Level, err error, requestID string) {
+	tags := map[string]string{
+		"handler":    handler,
+		"error_type": errType,
+	}
+	if requestID != "" {
+		tags["request_id"] = requestID
+	}
+
+	attrs := []any{
+		"handler", handler,
+		"error_type", errType,
+		"error", err,
+	}
+	if requestID != "" {
+		attrs = append(attrs, "request_id", requestID)
+	}
+	slog.Default().Log(ctx, level, "application_error", attrs...)
+	sentrysvc.CaptureException(ctx, err, sentrysvc.LevelFromSlog(level), tags)
 }

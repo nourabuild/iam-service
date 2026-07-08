@@ -1,56 +1,41 @@
 package jwt
 
 import (
-	"context"
 	"errors"
+	"time"
+
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
 type mockTokenService struct{}
 
-func NewMockTokenService() TokenRepository {
+func NewMockTokenService() *mockTokenService {
 	return &mockTokenService{}
 }
 
-// GenerateAccessToken implements [TokenRepository].
-func (m *mockTokenService) GenerateAccessToken(ctx context.Context, subject string, isAdmin bool) (string, error) {
-	if subject == "jwt_generate_access_error" {
-		return "", errors.New("error generating access token")
+func (m *mockTokenService) IssuePair(user models.User, now time.Time) (TokenPair, error) {
+	if user.ID == "jwt_generate_tokens_error" || user.ID == "jwt_generate_access_error_token" {
+		return TokenPair{}, errors.New("error generating tokens")
 	}
-	return "accessToken", nil
+
+	return TokenPair{
+		AccessToken:           "accessToken",
+		AccessTokenExpiresAt:  now.Add(15 * time.Minute),
+		RefreshToken:          "refreshToken",
+		RefreshTokenHash:      HashRefreshToken("refreshToken"),
+		RefreshTokenExpiresAt: now.Add(30 * 24 * time.Hour),
+	}, nil
 }
 
-// GenerateTokens implements [TokenRepository].
-func (m *mockTokenService) GenerateTokens(ctx context.Context, subject string, isAdmin bool) (accessToken string, refreshToken string, err error) {
-	if subject == "jwt_generate_tokens_error" {
-		return "", "", errors.New("error generating tokens")
-	}
-	return "accessToken", "refreshToken", nil
-}
-
-// ParseAccessToken implements [TokenRepository].
-func (m *mockTokenService) ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error) {
-	panic("unimplemented")
-}
-
-// ParseRefreshToken implements [TokenRepository].
-func (m *mockTokenService) ParseRefreshToken(ctx context.Context, tokenString string) (*Claims, error) {
+func (m *mockTokenService) ParseAccessToken(tokenString string) (models.Principal, error) {
 	switch tokenString {
-	case "jwt_expired_refresh_token":
-		return nil, ErrExpiredToken
-	case "jwt_invalid_refresh_token":
-		return nil, ErrInvalidToken
-	case "jwt_parse_refresh_error":
-		return nil, errors.New("error parsing refresh token")
-	case "jwt_generate_access_error_token":
-		claims := &Claims{}
-		// Refresh rotation now calls GenerateTokens, not GenerateAccessToken.
-		// Map this fixture onto the GenerateTokens error path.
-		claims.Subject = "jwt_generate_tokens_error"
-		return claims, nil
+	case "jwt_parse_access_error":
+		return models.Principal{}, errors.New("error parsing access token")
+	case "jwt_invalid_access_token":
+		return models.Principal{}, errors.New("invalid token")
+	case "jwt_admin_access_token":
+		return models.Principal{ID: "user-id", Role: models.RoleAdmin}, nil
 	default:
-		claims := &Claims{}
-		claims.Subject = "user-id"
-		return claims, nil
+		return models.Principal{ID: "user-id", Role: models.RoleUser}, nil
 	}
 }
-

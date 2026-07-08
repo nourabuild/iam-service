@@ -1,226 +1,157 @@
-// Package jwt provides a simple and secure JWT (JSON Web Token) service.
 package jwt
 
 import (
-	"context"
 	"crypto/rand"
-	"encoding/hex"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
-	"fmt"
-	"os"
-	"strings"
+
 	"time"
 
+	"github.com/nourabuild/iam-service/internal/sdk/errs"
+
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"github.com/nourabuild/iam-service/internal/sdk/config"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
-var (
-	ErrInvalidToken     = errors.New("invalid_token")
-	ErrExpiredToken     = errors.New("expired_token")
-	ErrTokenNotFound    = errors.New("token_not_found")
-	ErrInvalidClaims    = errors.New("invalid_claims")
-	ErrTokenNotYetValid = errors.New("token_not_yet_valid")
-)
-
-// minSecretLength is the minimum acceptable length, in bytes, for an HMAC-SHA256
-// signing key. NIST SP 800-107 recommends the key be at least as long as the
-// hash output (32 bytes for SHA-256).
-const (
-	minSecretLength = 32
-	issuer          = "noura-iam-service"
-)
-
-type Claims struct {
-	IsAdmin bool `json:"is_admin"`
-	jwt.RegisteredClaims
-}
+const accessTokenType = "access"
 
 type TokenRepository interface {
-	GenerateTokens(ctx context.Context, subject string, isAdmin bool) (accessToken, refreshToken string, err error)
-	GenerateAccessToken(ctx context.Context, subject string, isAdmin bool) (string, error)
-	ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error)
-	ParseRefreshToken(ctx context.Context, tokenString string) (*Claims, error)
+	IssuePair(user models.User, now time.Time) (TokenPair, error)
+	ParseAccessToken(token string) (models.Principal, error)
 }
 
 type TokenService struct {
-	AccessTokenSecretKey  []byte
-	RefreshTokenSecretKey []byte
-	AccessTokenExpiry     time.Duration
-	RefreshTokenExpiry    time.Duration
-	Issuer                string
-	Parser                *jwt.Parser
+	secret          []byte
+	issuer          string
+	accessTokenTTL  time.Duration
+	refreshTokenTTL time.Duration
 }
 
-// NewTokenService constructs a TokenService from required environment variables.
-// It returns an error (rather than silently falling back to predictable defaults)
-// if any required secret is missing or too short — those are conditions the
-// service must refuse to start under, since they make JWT forgery trivial.
-func NewTokenService() (*TokenService, error) {
-	accessSecret, err := loadSecret("JWT_ACCESS_TOKEN_SECRET")
-	if err != nil {
-		return nil, err
+type Claims struct {
+	IsAdmin   bool   `json:"is_admin"`
+	Role      string `json:"role"`
+	TokenType string `json:"typ"`
+	jwt.RegisteredClaims
+}
+
+type TokenPair struct {
+	AccessToken           string
+	AccessTokenExpiresAt  time.Time
+	RefreshToken          string
+	RefreshTokenHash      []byte
+	RefreshTokenExpiresAt time.Time
+}
+
+func NewTokenService(cfg config.AuthConfig) *TokenService {
+	return &TokenService{
+		secret:          []byte(cfg.JWTSecret),
+		issuer:          cfg.Issuer,
+		accessTokenTTL:  cfg.AccessTokenTTL,
+		refreshTokenTTL: cfg.RefreshTokenTTL,
 	}
-	refreshSecret, err := loadSecret("JWT_REFRESH_TOKEN_SECRET")
+}
+
+func (m *TokenService) IssuePair(user models.User, now time.Time) (TokenPair, error) {
+	accessToken, accessExpiresAt, err := m.IssueAccessToken(user, now)
 	if err != nil {
-		return nil, err
+		return TokenPair{}, err
 	}
 
-	return &TokenService{
-		AccessTokenSecretKey:  accessSecret,
-		RefreshTokenSecretKey: refreshSecret,
-		AccessTokenExpiry:     15 * time.Minute,
-		RefreshTokenExpiry:    30 * 24 * time.Hour,
-		Issuer:                issuer,
-		Parser: jwt.NewParser(
-			jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
-			jwt.WithExpirationRequired(),
-			jwt.WithStrictDecoding(),
-			jwt.WithIssuer(issuer),
-		),
+	refreshToken, refreshHash, err := NewRefreshToken()
+	if err != nil {
+		return TokenPair{}, err
+	}
+
+	return TokenPair{
+		AccessToken:           accessToken,
+		AccessTokenExpiresAt:  accessExpiresAt,
+		RefreshToken:          refreshToken,
+		RefreshTokenHash:      refreshHash,
+		RefreshTokenExpiresAt: now.Add(m.refreshTokenTTL),
 	}, nil
 }
 
-func loadSecret(key string) ([]byte, error) {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return nil, fmt.Errorf("jwt: %s is required", key)
-	}
-	if len(value) < minSecretLength {
-		return nil, fmt.Errorf("jwt: %s must be at least %d bytes (got %d)", key, minSecretLength, len(value))
-	}
-	return []byte(value), nil
-}
-
-// GenerateTokens creates a new access and refresh token pair.
-func (s *TokenService) GenerateTokens(ctx context.Context, subject string, isAdmin bool) (accessToken, refreshToken string, err error) {
-	now := time.Now()
-
-	// 1. Create short-lived access token (used on every API request).
-	accessToken, err = s.createToken(subject, isAdmin, now.Add(s.AccessTokenExpiry), s.AccessTokenSecretKey)
-	if err != nil {
-		return "", "", fmt.Errorf("creating access token: %w", err)
-	}
-
-	// 2. Create long-lived refresh token (used only to get a new access token).
-	refreshToken, err = s.createToken(subject, isAdmin, now.Add(s.RefreshTokenExpiry), s.RefreshTokenSecretKey)
-	if err != nil {
-		return "", "", fmt.Errorf("creating refresh token: %w", err)
-	}
-
-	return accessToken, refreshToken, nil
-}
-
-// GenerateAccessToken creates only an access token for a user.
-func (s *TokenService) GenerateAccessToken(ctx context.Context, subject string, isAdmin bool) (string, error) {
-	now := time.Now()
-
-	accessToken, err := s.createToken(subject, isAdmin, now.Add(s.AccessTokenExpiry), s.AccessTokenSecretKey)
-	if err != nil {
-		return "", fmt.Errorf("creating access token: %w", err)
-	}
-
-	return accessToken, nil
-}
-
-// ParseAccessToken validates an access token and returns its claims.
-func (s *TokenService) ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error) {
-	return s.parseToken(tokenString, s.AccessTokenSecretKey)
-}
-
-// ParseRefreshToken validates a refresh token and returns its claims.
-func (s *TokenService) ParseRefreshToken(ctx context.Context, tokenString string) (*Claims, error) {
-	return s.parseToken(tokenString, s.RefreshTokenSecretKey)
-}
-
-// =============================================================================
-// Private Methods
-// =============================================================================
-
-// createToken builds and signs a JWT with the given parameters.
-func (s *TokenService) createToken(subject string, isAdmin bool, expiresAt time.Time, secret []byte) (string, error) {
-	if len(secret) == 0 {
-		return "", errors.New("token secret is empty")
-	}
-
-	// A random jti makes every token unique. Without it, two tokens for the
-	// same subject issued within the same second are byte-identical (iat/exp
-	// have second resolution), which breaks refresh-token rotation: the
-	// "new" token collides with the one being retired and reuse detection
-	// can no longer tell them apart.
-	jti, err := randomTokenID()
-	if err != nil {
-		return "", fmt.Errorf("generating token id: %w", err)
-	}
-
-	now := time.Now()
-
-	// 1. Bundle all claims (who the token is for, when it expires, etc.).
+func (m *TokenService) IssueAccessToken(user models.User, now time.Time) (string, time.Time, error) {
+	accessExpiresAt := now.Add(m.accessTokenTTL)
 	claims := Claims{
-		IsAdmin: isAdmin,
+		IsAdmin:   user.IsAdmin,
+		Role:      roleForUser(user),
+		TokenType: accessTokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   subject,
-			Issuer:    s.Issuer,
+			Issuer:    m.issuer,
+			Subject:   user.ID,
+			ExpiresAt: jwt.NewNumericDate(accessExpiresAt),
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			NotBefore: jwt.NewNumericDate(now),
-			ID:        jti,
+			ID:        uuid.NewString(),
 		},
 	}
 
-	// 2. Sign with HMAC-SHA256 and return the "header.payload.signature" string.
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(secret)
-}
-
-// randomTokenID returns a 128-bit random identifier for the jti claim.
-func randomTokenID() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
-}
-
-// parseToken validates a token string and extracts its claims.
-func (s *TokenService) parseToken(tokenString string, secret []byte) (*Claims, error) {
-	// 1. Reject empty input before touching the jwt library.
-	if tokenString == "" {
-		return nil, ErrTokenNotFound
-	}
-
-	claims := &Claims{}
-
-	// 2. Parse and verify: the callback returns the secret used to check the signature.
-	//    We also assert the algorithm is HMAC here to guard against algorithm-confusion attacks.
-	_, err := s.Parser.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-		}
-		return secret, nil
-	})
-
-	// 3. Convert library errors to our sentinel errors, then do a final validity check.
+	accessToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(m.secret)
 	if err != nil {
-		return nil, convertError(err)
+		return "", time.Time{}, err
 	}
 
-	return claims, nil
+	return accessToken, accessExpiresAt, nil
 }
 
-// convertError transforms jwt library errors into our custom errors.
-func convertError(err error) error {
-	switch {
-	case errors.Is(err, jwt.ErrTokenExpired):
-		return ErrExpiredToken
-	case errors.Is(err, jwt.ErrTokenNotValidYet):
-		return ErrTokenNotYetValid
-	case errors.Is(err, jwt.ErrTokenMalformed):
-		return ErrInvalidToken
-	case errors.Is(err, jwt.ErrTokenSignatureInvalid):
-		return ErrInvalidToken
-	case errors.Is(err, jwt.ErrTokenInvalidClaims):
-		return ErrInvalidClaims
-	default:
-		return ErrInvalidToken
+func (m *TokenService) ParseAccessToken(tokenString string) (models.Principal, error) {
+	claims := new(Claims)
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (any, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, errors.New("unexpected signing method")
+		}
+		return m.secret, nil
+	}, jwt.WithIssuer(m.issuer), jwt.WithExpirationRequired())
+	if err != nil || !token.Valid {
+		if err == nil {
+			err = errors.New("token is invalid")
+		}
+		return models.Principal{}, errs.Wrap(err, errs.ErrUnauthorized.Status, errs.ErrUnauthorized.Key)
 	}
+	if claims.TokenType != "" && claims.TokenType != accessTokenType {
+		return models.Principal{}, errs.Wrap(errors.New("token type is not access"), errs.ErrUnauthorized.Status, errs.ErrUnauthorized.Key)
+	}
+	if claims.Subject == "" {
+		return models.Principal{}, errs.Wrap(errors.New("token subject is empty"), errs.ErrUnauthorized.Status, errs.ErrUnauthorized.Key)
+	}
+	return models.Principal{ID: claims.Subject, Role: roleForClaims(claims)}, nil
+}
+
+func roleForUser(user models.User) string {
+	if user.Role != "" {
+		return string(user.Role)
+	}
+	if user.IsAdmin {
+		return string(models.RoleAdmin)
+	}
+	return string(models.RoleUser)
+}
+
+func roleForClaims(claims *Claims) models.Role {
+	if claims.Role != "" {
+		return models.Role(claims.Role)
+	}
+	if claims.IsAdmin {
+		return models.RoleAdmin
+	}
+	return models.RoleUser
+}
+
+func NewRefreshToken() (string, []byte, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", nil, err
+	}
+	token := base64.RawURLEncoding.EncodeToString(b[:])
+	hash := HashRefreshToken(token)
+	return token, hash, nil
+}
+
+func HashRefreshToken(token string) []byte {
+	sum := sha256.Sum256([]byte(token))
+	return sum[:]
 }

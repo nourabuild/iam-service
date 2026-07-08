@@ -1,99 +1,141 @@
-// Package sentry provides error tracking and monitoring using Sentry.
 package sentry
 
 import (
-	"os"
-	"time"
+	"context"
+	"log/slog"
+	"net/url"
 
-	"github.com/getsentry/sentry-go"
+	githubsentry "github.com/getsentry/sentry-go"
+	sentrygin "github.com/getsentry/sentry-go/gin"
+	"github.com/gin-gonic/gin"
+	"github.com/nourabuild/iam-service/internal/sdk/config"
+	"github.com/nourabuild/iam-service/internal/sdk/middleware"
 )
 
-const (
-	LevelDebug   Level = sentry.LevelDebug
-	LevelInfo    Level = sentry.LevelInfo
-	LevelWarning Level = sentry.LevelWarning
-	LevelError   Level = sentry.LevelError
-	LevelFatal   Level = sentry.LevelFatal
-)
-
-type Scope = sentry.Scope
-type Level = sentry.Level
-
-type SentryRepository interface {
-	CaptureException(err error)
-	CaptureMessage(message string)
-	Flush(timeout time.Duration) bool
-	Close()
-	Recover()
-	WithScope(fn func(scope *Scope))
-}
-
-type SentryService struct {
-	Dsn         string
-	Environment string
-	Debug       bool
-	SampleRate  float64
-}
-
-// NewSentryService initializes Sentry and returns the service
-func NewSentryService() *SentryService {
-	env := os.Getenv("SENTRY_ENVIRONMENT")
-	if env == "" {
-		env = "development"
+func SetupSentry(ctx context.Context, cfg config.Sentry, logger *slog.Logger) (func(context.Context) error, error) {
+	if cfg.DSN == "" {
+		logger.InfoContext(ctx, "sentry disabled")
+		return func(context.Context) error { return nil }, nil
 	}
 
-	dsn := os.Getenv("SENTRY_DSN")
-	debug := env == "development"
-	sampleRate := 1.0
-
-	_ = sentry.Init(sentry.ClientOptions{
-		Dsn:         dsn,
-		Environment: env,
-		Debug:       debug,
-		SampleRate:  sampleRate,
-	})
-
-	return &SentryService{
-		Dsn:         dsn,
-		Environment: env,
-		Debug:       debug,
-		SampleRate:  sampleRate,
+	if err := githubsentry.Init(githubsentry.ClientOptions{
+		Dsn:              cfg.DSN,
+		Environment:      cfg.Environment,
+		Release:          cfg.Release,
+		AttachStacktrace: true,
+		EnableTracing:    cfg.SentryTracesSampleRate > 0,
+		TracesSampleRate: cfg.SentryTracesSampleRate,
+		BeforeSend: func(event *githubsentry.Event, hint *githubsentry.EventHint) *githubsentry.Event {
+			return scrubSentryRequest(event)
+		},
+		BeforeSendTransaction: func(event *githubsentry.Event, hint *githubsentry.EventHint) *githubsentry.Event {
+			return scrubSentryRequest(event)
+		},
+	}); err != nil {
+		return nil, err
 	}
+
+	logger.InfoContext(ctx, "sentry enabled", "environment", cfg.Environment)
+	return func(ctx context.Context) error {
+		if ok := githubsentry.FlushWithContext(ctx); !ok {
+			return context.DeadlineExceeded
+		}
+		return nil
+	}, nil
 }
 
-// CaptureException sends an error to Sentry.
-func (s *SentryService) CaptureException(err error) {
+func scrubSentryRequest(event *githubsentry.Event) *githubsentry.Event {
+	if event == nil || event.Request == nil || event.Request.QueryString == "" {
+		return event
+	}
+	query, err := url.ParseQuery(event.Request.QueryString)
+	if err != nil {
+		return event
+	}
+	if !query.Has("access_token") {
+		return event
+	}
+	query.Set("access_token", "[Filtered]")
+	event.Request.QueryString = query.Encode()
+	return event
+}
+
+func CaptureException(ctx context.Context, err error, level githubsentry.Level, tags map[string]string) {
 	if err == nil {
 		return
 	}
-	sentry.CaptureException(err)
+
+	hub := githubsentry.GetHubFromContext(ctx)
+	if hub == nil {
+		hub = githubsentry.CurrentHub()
+	}
+
+	hub.WithScope(func(scope *githubsentry.Scope) {
+		scope.SetLevel(level)
+		if len(tags) > 0 {
+			scope.SetTags(tags)
+		}
+		if client := hub.Client(); client != nil {
+			client.CaptureException(err, &githubsentry.EventHint{
+				Context:           ctx,
+				OriginalException: err,
+			}, scope)
+		}
+	})
 }
 
-// CaptureMessage sends a message to Sentry.
-func (s *SentryService) CaptureMessage(message string) {
-	sentry.CaptureMessage(message)
-}
-
-// Flush waits for all events to be sent to Sentry.
-func (s *SentryService) Flush(timeout time.Duration) bool {
-	return sentry.Flush(timeout)
-}
-
-// Close flushes pending events and shuts down the Sentry client
-func (s *SentryService) Close() {
-	s.Flush(2 * time.Second)
-}
-
-// Recover captures a panic and sends it to Sentry
-func (s *SentryService) Recover() {
-	if r := recover(); r != nil {
-		sentry.CurrentHub().Recover(r)
-		sentry.Flush(2 * time.Second)
+func LevelFromSlog(level slog.Level) githubsentry.Level {
+	switch {
+	case level >= slog.LevelError:
+		return githubsentry.LevelError
+	case level >= slog.LevelWarn:
+		return githubsentry.LevelWarning
+	case level <= slog.LevelDebug:
+		return githubsentry.LevelDebug
+	default:
+		return githubsentry.LevelInfo
 	}
 }
 
-// WithScope allows you to modify the Sentry scope for a specific operation
-func (s *SentryService) WithScope(fn func(scope *Scope)) {
-	sentry.WithScope(fn)
+func SentryMiddleware(cfg config.Sentry) gin.HandlerFunc {
+	return sentrygin.New(sentrygin.Options{
+		Repanic:         true,
+		WaitForDelivery: false,
+		Timeout:         cfg.SentryFlushTimeout,
+	})
 }
 
+func SentryRequestContext() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if hub := sentrygin.GetHubFromContext(c); hub != nil {
+			hub.ConfigureScope(func(scope *githubsentry.Scope) {
+				if requestID := c.GetString("request_id"); requestID != "" {
+					scope.SetTag("request_id", requestID)
+				}
+				if route := c.FullPath(); route != "" {
+					scope.SetTag("route", route)
+				}
+			})
+		}
+		c.Next()
+	}
+}
+
+func SentryPrincipal() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		principal, err := middleware.Principal(c)
+		if err == nil {
+			if hub := sentrygin.GetHubFromContext(c); hub != nil {
+				hub.ConfigureScope(func(scope *githubsentry.Scope) {
+					scope.SetUser(githubsentry.User{ID: principal.ID})
+					if principal.IsAdmin() {
+						scope.SetTag("role", "admin")
+					} else {
+						scope.SetTag("role", "user")
+					}
+				})
+			}
+		}
+		c.Next()
+	}
+}

@@ -3,6 +3,26 @@ package models
 
 import "time"
 
+type Role string
+
+const (
+	RoleUser  Role = "user"
+	RoleAdmin Role = "admin"
+)
+
+func (r Role) Valid() bool {
+	return r == RoleUser || r == RoleAdmin
+}
+
+type Principal struct {
+	ID   string `json:"id"`
+	Role Role   `json:"role"`
+}
+
+func (p Principal) IsAdmin() bool {
+	return p.Role == RoleAdmin
+}
+
 // RefreshToken represents a refresh token for a user
 type RefreshToken struct {
 	ID        string     `json:"id"`
@@ -33,6 +53,7 @@ type User struct {
 	Phone         *string   `json:"phone,omitempty"`
 	AvatarPhotoID *int      `json:"avatar_photo_id,omitempty"`
 	IsAdmin       bool      `json:"is_admin"`
+	Role          Role      `json:"role"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -102,6 +123,7 @@ type UserCreatedEvent struct {
 	Email      string    `json:"email"`
 	Account    string    `json:"account"`
 	IsAdmin    bool      `json:"is_admin"`
+	Role       Role      `json:"role"`
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
@@ -117,5 +139,6 @@ type UserUpdatedEvent struct {
 	Phone         *string   `json:"phone,omitempty"`
 	AvatarPhotoID *int      `json:"avatar_photo_id,omitempty"`
 	IsAdmin       bool      `json:"is_admin"`
+	Role          Role      `json:"role"`
 	OccurredAt    time.Time `json:"occurred_at"`
 }
