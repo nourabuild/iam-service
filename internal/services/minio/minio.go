@@ -9,8 +9,8 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
-	"log/slog"
 	"math"
+	"strings"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -26,7 +26,7 @@ const (
 	AvatarLarge  AvatarSize = "large"
 )
 
-var AvatarDimensions = map[AvatarSize]int{
+var avatarDimensions = map[AvatarSize]int{
 	AvatarSmall:  64,
 	AvatarMedium: 128,
 	AvatarLarge:  256,
@@ -53,9 +53,13 @@ func AspectRatioValidationHelper(img image.Image) error {
 // ResizeAvatar resizes an image to all avatar sizes using nearest-neighbor scaling.
 // format must be "png" or "jpeg".
 func ResizeAvatar(img image.Image, format string) (map[AvatarSize][]byte, error) {
-	results := make(map[AvatarSize][]byte, len(AvatarDimensions))
+	if img == nil || img.Bounds().Dx() <= 0 || img.Bounds().Dy() <= 0 {
+		return nil, fmt.Errorf("avatar image must have non-zero dimensions")
+	}
+	format = strings.ToLower(strings.TrimSpace(format))
+	results := make(map[AvatarSize][]byte, len(avatarDimensions))
 
-	for size, dim := range AvatarDimensions {
+	for size, dim := range avatarDimensions {
 		resized := resizeNearestNeighbor(img, dim, dim)
 
 		var buf bytes.Buffer
@@ -107,12 +111,10 @@ type Config struct {
 
 type MinioService struct {
 	client *minio.Client
-	log    *slog.Logger
 }
 
 type NewMinioServiceOptions struct {
 	Config    Config
-	Logger    *slog.Logger
 	PathStyle bool
 }
 
@@ -132,10 +134,7 @@ func NewMinioService(opts NewMinioServiceOptions) (*MinioService, error) {
 		return nil, err
 	}
 
-	return &MinioService{
-		client: client,
-		log:    opts.Logger,
-	}, nil
+	return &MinioService{client: client}, nil
 }
 
 // Put uploads a blob to the bucket under key with the given contentType.
@@ -157,10 +156,10 @@ func (s *MinioService) Get(ctx context.Context, bucket, key string) (io.ReadClos
 	// Check if the object actually exists by reading its stat.
 	_, err = obj.Stat()
 	if err != nil {
-		obj.Close()
-		// TODO: Implement — decide how to detect "not found" vs real errors.
-		// minio-go returns an ErrorResponse with Code "NoSuchKey" for missing objects.
-		// You could return (nil, nil) for not-found, or wrap the error differently.
+		_ = obj.Close()
+		if minio.ToErrorResponse(err).Code == minio.NoSuchKey {
+			return nil, nil
+		}
 		return nil, err
 	}
 

@@ -1,31 +1,48 @@
+# syntax=docker/dockerfile:1.7
+
+ARG GO_VERSION=1.26.5
+
 # Build stage
-FROM golang:1.26-alpine AS build_iam
+FROM golang:${GO_VERSION}-alpine AS build_iam
+
+ARG BUILD_REF=unknown
+ARG TARGETOS
+ARG TARGETARCH
 
 ENV CGO_ENABLED=0
-ARG BUILD_REF
 
 WORKDIR /iam-service
 
-## Cache deps
+# Download dependencies in a separate layer. The cache mount keeps downloaded
+# modules between builds without copying the module cache into the image.
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download && go mod verify
 
-## Copy source
+# Copy the source only after dependencies so normal code changes do not force
+# all modules to be downloaded again.
 COPY . .
 
-## Build binary
-WORKDIR /iam-service/cmd/api
-RUN go build -o /iam-service/api \
-    -ldflags "-s -w -X main.build=${BUILD_REF}"
+# Build a static, stripped, reproducible binary for the requested platform.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH}" \
+    go build \
+        -mod=readonly \
+        -trimpath \
+        -ldflags="-s -w -X main.build=${BUILD_REF}" \
+        -o /out/iam-service \
+        ./cmd/api
 
 # Runtime stage
-FROM gcr.io/distroless/static-debian13:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot AS iam_service
 
 ARG BUILD_DATE
-ARG BUILD_REF
+ARG BUILD_REF=unknown
 
 LABEL org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.title="iam-service" \
+      org.opencontainers.image.description="Noura identity and access management service" \
       org.opencontainers.image.authors="Shohin Abdulkhamidov <shohin@noura.software>" \
       org.opencontainers.image.source="https://github.com/nourabuild/iam-service" \
       org.opencontainers.image.revision="${BUILD_REF}" \
@@ -33,6 +50,8 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}" \
 
 WORKDIR /iam-service
 
-COPY --from=build_iam /iam-service/api /iam-service/api
+COPY --from=build_iam /out/iam-service /iam-service/api
+
+EXPOSE 10067
 
 ENTRYPOINT ["/iam-service/api"]

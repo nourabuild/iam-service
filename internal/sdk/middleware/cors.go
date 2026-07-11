@@ -2,18 +2,14 @@ package middleware
 
 import (
 	"log"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
-// CORS returns a configured CORS middleware for Gin
-func CORS() gin.HandlerFunc {
-	allowOrigins := parseOrigins(os.Getenv("CORS_ALLOW_ORIGINS"))
-	allowCredentials := strings.EqualFold(os.Getenv("CORS_ALLOW_CREDENTIALS"), "true")
+// CORS returns configured cross-origin request middleware for Gin.
+func CORS(allowOrigins []string, allowCredentials bool) gin.HandlerFunc {
 	if len(allowOrigins) == 0 {
 		allowOrigins = []string{"*"}
 	}
@@ -27,26 +23,9 @@ func CORS() gin.HandlerFunc {
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Timezone", "X-Request-ID"},
 		ExposeHeaders:    []string{"Content-Length", "X-Request-ID"},
-		AllowCredentials: true,
+		AllowCredentials: allowCredentials,
 		MaxAge:           12 * time.Hour,
 	}
 
 	return cors.New(config)
-}
-
-func parseOrigins(raw string) []string {
-	if raw == "" {
-		return nil
-	}
-
-	parts := strings.Split(raw, ",")
-	origins := make([]string, 0, len(parts))
-	for _, part := range parts {
-		origin := strings.TrimSpace(part)
-		if origin != "" {
-			origins = append(origins, origin)
-		}
-	}
-
-	return origins
 }

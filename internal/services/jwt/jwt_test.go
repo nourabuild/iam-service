@@ -1,7 +1,6 @@
 package jwt
 
 import (
-	"bytes"
 	"testing"
 	"time"
 
@@ -84,10 +83,6 @@ func TestIssuePairAndParseAccessToken(t *testing.T) {
 	if pair.RefreshTokenExpiresAt.Before(now) || pair.RefreshTokenExpiresAt.After(now.Add(svc.refreshTokenTTL).Add(time.Second)) {
 		t.Fatalf("refresh token expiry not based on configured TTL: %s", pair.RefreshTokenExpiresAt)
 	}
-	if !bytes.Equal(HashRefreshToken(pair.RefreshToken), pair.RefreshTokenHash) {
-		t.Fatal("refresh token hash does not match refresh token")
-	}
-
 	principal, err := svc.ParseAccessToken(pair.AccessToken)
 	if err != nil {
 		t.Fatalf("ParseAccessToken returned error: %v", err)
@@ -151,6 +146,42 @@ func TestRoleFallsBackToIsAdmin(t *testing.T) {
 	}
 	if principal.Role != models.RoleAdmin {
 		t.Fatalf("expected role admin fallback, got %q", principal.Role)
+	}
+}
+
+func TestInvalidRoleFallsBackToIsAdmin(t *testing.T) {
+	svc := mustService(t)
+	user := models.User{ID: "user-123", Role: models.Role("superuser"), IsAdmin: true}
+
+	token, _, err := svc.IssueAccessToken(user, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("IssueAccessToken returned error: %v", err)
+	}
+	principal, err := svc.ParseAccessToken(token)
+	if err != nil {
+		t.Fatalf("ParseAccessToken returned error: %v", err)
+	}
+	if principal.Role != models.RoleAdmin {
+		t.Fatalf("role = %q, want admin fallback", principal.Role)
+	}
+}
+
+func TestMissingTokenTypeRejected(t *testing.T) {
+	svc := mustService(t)
+	claims := Claims{
+		Role: string(models.RoleUser),
+		RegisteredClaims: gojwt.RegisteredClaims{
+			Subject:   "user-123",
+			Issuer:    testIssuer,
+			ExpiresAt: gojwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	}
+	token, err := gojwt.NewWithClaims(gojwt.SigningMethodHS256, claims).SignedString(svc.secret)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+	if _, err := svc.ParseAccessToken(token); err == nil {
+		t.Fatal("token without typ=access was accepted")
 	}
 }
 

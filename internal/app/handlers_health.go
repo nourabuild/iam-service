@@ -34,8 +34,8 @@ func (a *App) HandleReadiness(c *gin.Context) {
 }
 
 func (a *App) HandleLiveness(c *gin.Context) {
-	host, _ := osHostname()
-	if host == "" {
+	host, err := osHostname()
+	if err != nil || host == "" {
 		host = "unavailable"
 		c.JSON(http.StatusServiceUnavailable, models.Liveness{
 			Status:     "down",

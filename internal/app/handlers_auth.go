@@ -26,13 +26,17 @@ const (
 	minAccountLength  = 6
 	bcryptCost        = bcrypt.DefaultCost
 
-	maxRegisterFormMemory int64 = 10 << 20 // 10 MB
+	maxRegisterBodyBytes int64 = 10 << 20 // 10 MB
 
 	resetTokenLength = 32            // 32 bytes = 64 hex characters
 	resetTokenTTL    = 1 * time.Hour // Token expires in 1 hour
 )
 
 var generateFromPassword = bcrypt.GenerateFromPassword
+
+// dummyPasswordHash equalizes the expensive bcrypt path for unknown users so
+// login response timing does not reveal whether an email is registered.
+var dummyPasswordHash = []byte("$2a$10$Vt2o6/8XZ46Ga5QIXQGDUuW8fBES0LtU7EKi2TlCSnk2kGkN.a6XK")
 
 type LoginRequest struct {
 	Email    string `json:"email"`
@@ -66,7 +70,7 @@ func parseMultipartOrForm(r *http.Request, maxMemory int64) error {
 
 func (a *App) HandleRegister(c *gin.Context) {
 	ctx := c.Request.Context()
-	if err := parseMultipartOrForm(c.Request, maxRegisterFormMemory); err != nil {
+	if err := parseMultipartOrForm(c.Request, maxRegisterBodyBytes); err != nil {
 		a.report(c, "register", "parse_form", slog.LevelError, err)
 		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
 		return
@@ -109,7 +113,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 
 	// The UserCreated event is written to the outbox in the same transaction
 	// as the user row; the relay delivers it to Kafka at-least-once.
-	requestID := c.GetHeader("X-Request-ID")
+	correlationID := requestID(c)
 	createdUser, err := a.db.CreateUser(ctx, newUser, func(u models.User) *models.OutboxMessage {
 		return &models.OutboxMessage{
 			Topic: kafka.ProduceTopicUserCreated,
@@ -124,7 +128,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 				Role:       u.Role,
 				OccurredAt: time.Now().UTC(),
 			},
-			Headers: outboxHeaders(requestID, u.ID),
+			Headers: outboxHeaders(correlationID, u.ID),
 		}
 	})
 	if err != nil {
@@ -174,6 +178,7 @@ func (a *App) HandleLogin(c *gin.Context) {
 	user, err := a.db.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
+			_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(req.Password))
 			writeError(c, http.StatusUnauthorized, "invalid_credentials", nil)
 			return
 		}
@@ -270,16 +275,19 @@ func (a *App) HandleRefresh(c *gin.Context) {
 		return
 	}
 
-	if err := a.storeRefreshToken(c.Request.Context(), storedToken.UserID, tokenPair.RefreshToken, tokenPair.RefreshTokenExpiresAt); err != nil {
-		a.report(c, "refresh", "db_token", slog.LevelError, err)
+	if _, err := a.db.RotateRefreshToken(c.Request.Context(), storedToken.ID, models.NewRefreshToken{
+		UserID:    storedToken.UserID,
+		Token:     []byte(tokenPair.RefreshToken),
+		ExpiresAt: tokenPair.RefreshTokenExpiresAt,
+	}); err != nil {
+		if errors.Is(err, sqldb.ErrDBNotFound) {
+			// Another request rotated this token after our initial lookup.
+			writeError(c, http.StatusUnauthorized, "invalid_token", nil)
+			return
+		}
+		a.report(c, "refresh", "db_rotate", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
 		return
-	}
-
-	if err := a.db.RevokeRefreshToken(c.Request.Context(), storedToken.ID); err != nil {
-		// Old token survived as un-revoked: surface for ops but don't fail the
-		// request — the new token is already issued and stored.
-		a.report(c, "refresh", "db_revoke", slog.LevelWarn, err)
 	}
 
 	c.JSON(http.StatusOK, TokenResponse{
@@ -315,7 +323,8 @@ func validateRegisterInput(req models.NewUser) (string, map[string]string) {
 		validationErrors["password_confirm"] = "password_mismatch"
 	}
 
-	if _, err := mail.ParseAddress(req.Email); err != nil {
+	address, err := mail.ParseAddress(req.Email)
+	if err != nil || address.Address != req.Email {
 		validationErrors["email"] = "invalid_email_format"
 	}
 
@@ -483,7 +492,7 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 		return
 	}
 
-	if err := a.mailtrap.SendPasswordResetEmail(user.Email, token); err != nil {
+	if err := a.mailtrap.SendPasswordResetEmail(c.Request.Context(), user.Email, token); err != nil {
 		a.report(c, "forgot_password", "email", slog.LevelError, err)
 	}
 
@@ -525,10 +534,18 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 		return
 	}
 
-	// Atomically redeem the reset token: it is marked used in the same
-	// statement that validates it, so a concurrent request presenting the
-	// same token loses the race and gets "invalid_or_expired".
-	resetToken, err := a.db.ConsumePasswordResetToken(c.Request.Context(), req.Token)
+	// Hash before consuming the one-time token. A local hashing failure should
+	// not force the user to request another reset email.
+	hashedPassword, err := generateFromPassword([]byte(req.Password), bcryptCost)
+	if err != nil {
+		a.report(c, "reset_password", "bcrypt", slog.LevelError, err)
+		writeError(c, http.StatusInternalServerError, "internal_hash_error", nil)
+		return
+	}
+
+	// Consume the reset token, update the password, and revoke active sessions
+	// in one database transaction.
+	err = a.db.ResetPassword(c.Request.Context(), req.Token, hashedPassword)
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBNotFound) {
 			writeError(c, http.StatusBadRequest, "invalid_or_expired_reset_token", nil)
@@ -537,29 +554,6 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 		a.report(c, "reset_password", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_reset_password_error", nil)
 		return
-	}
-
-	// Hash new password
-	hashedPassword, err := generateFromPassword([]byte(req.Password), bcryptCost)
-	if err != nil {
-		a.report(c, "reset_password", "bcrypt", slog.LevelError, err)
-		writeError(c, http.StatusInternalServerError, "internal_hash_error", nil)
-		return
-	}
-
-	// Update user password
-	err = a.db.UpdateUserPassword(c.Request.Context(), resetToken.UserID, hashedPassword)
-	if err != nil {
-		a.report(c, "reset_password", "db", slog.LevelError, err)
-		writeError(c, http.StatusInternalServerError, "internal_reset_password_error", nil)
-		return
-	}
-
-	// Optionally revoke all refresh tokens for security
-	err = a.db.DeleteRefreshTokensByUserID(c.Request.Context(), resetToken.UserID)
-	if err != nil {
-		// Log error but don't fail the request
-		a.report(c, "reset_password", "db", slog.LevelWarn, err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

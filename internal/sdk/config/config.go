@@ -1,8 +1,15 @@
+// Package config loads and validates application configuration.
 package config
 
 import (
+	"errors"
 	"fmt"
+	"math"
+	"net"
+	"net/mail"
+	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,9 +25,6 @@ const (
 	defaultJWTIssuer        = "noura-iam-service"
 	defaultAccessTokenTTL   = 15 * time.Minute
 	defaultRefreshTokenTTL  = 30 * 24 * time.Hour
-	defaultKafkaBrokers     = "localhost:9092"
-	defaultKafkaPartitions  = 3
-	defaultKafkaReplicas    = 1
 	defaultSentryFlush      = 2 * time.Second
 	defaultMailtrapSendURL  = "https://send.api.mailtrap.io/api/send"
 	defaultMailtrapFrom     = "noreply@example.com"
@@ -34,17 +38,17 @@ type Config struct {
 	DB            DB
 	Auth          AuthConfig
 	CORS          CORS
-	Kafka         Kafka
 	Mailtrap      Mailtrap
 	Sentry        Sentry
 	Observability Observability
 }
 
 type HTTP struct {
-	Port         string
-	IdleTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	Port           string
+	IdleTimeout    time.Duration
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
+	TrustedProxies []string
 }
 
 type DB struct {
@@ -59,7 +63,6 @@ type DB struct {
 
 type AuthConfig struct {
 	JWTSecret       string
-	RefreshSecret   string
 	Issuer          string
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
@@ -68,12 +71,6 @@ type AuthConfig struct {
 type CORS struct {
 	AllowOrigins     []string
 	AllowCredentials bool
-}
-
-type Kafka struct {
-	Brokers         []string
-	TopicPartitions int
-	TopicReplicas   int
 }
 
 type Mailtrap struct {
@@ -99,30 +96,47 @@ type Observability struct {
 }
 
 func Load() (Config, error) {
+	var problems []error
+	accessTokenTTL, err := parseDuration(env("JWT_ACCESS_TOKEN_TTL"), defaultAccessTokenTTL)
+	if err != nil {
+		problems = append(problems, fmt.Errorf("JWT_ACCESS_TOKEN_TTL: %w", err))
+	}
+	refreshTokenTTL, err := parseDuration(env("JWT_REFRESH_TOKEN_TTL"), defaultRefreshTokenTTL)
+	if err != nil {
+		problems = append(problems, fmt.Errorf("JWT_REFRESH_TOKEN_TTL: %w", err))
+	}
+	allowCredentials, err := parseBool(env("CORS_ALLOW_CREDENTIALS"), false)
+	if err != nil {
+		problems = append(problems, fmt.Errorf("CORS_ALLOW_CREDENTIALS: %w", err))
+	}
+	tracesSampleRate, err := parseFloat(firstNonEmpty(env("SENTRY_TRACES_SAMPLE_RATE"), env("SENTRY_SAMPLE_RATE")), 1)
+	if err != nil {
+		problems = append(problems, fmt.Errorf("SENTRY_TRACES_SAMPLE_RATE: %w", err))
+	}
+	sentryFlushTimeout, err := parseDuration(env("SENTRY_FLUSH_TIMEOUT"), defaultSentryFlush)
+	if err != nil {
+		problems = append(problems, fmt.Errorf("SENTRY_FLUSH_TIMEOUT: %w", err))
+	}
+
 	cfg := Config{
 		Env: envOr("APP_ENV", defaultEnv),
 		HTTP: HTTP{
-			Port:         firstNonEmpty(env("HTTP_PORT"), env("PORT"), defaultHTTPPort),
-			IdleTimeout:  time.Minute,
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: 10 * time.Second,
+			Port:           firstNonEmpty(env("HTTP_PORT"), env("PORT"), defaultHTTPPort),
+			IdleTimeout:    time.Minute,
+			ReadTimeout:    5 * time.Second,
+			WriteTimeout:   10 * time.Second,
+			TrustedProxies: splitList(env("TRUSTED_PROXIES")),
 		},
 		DB: LoadDB(),
 		Auth: AuthConfig{
 			JWTSecret:       env("JWT_ACCESS_TOKEN_SECRET"),
-			RefreshSecret:   env("JWT_REFRESH_TOKEN_SECRET"),
 			Issuer:          envOr("JWT_ISSUER", defaultJWTIssuer),
-			AccessTokenTTL:  parseDuration(env("JWT_ACCESS_TOKEN_TTL"), defaultAccessTokenTTL),
-			RefreshTokenTTL: parseDuration(env("JWT_REFRESH_TOKEN_TTL"), defaultRefreshTokenTTL),
+			AccessTokenTTL:  accessTokenTTL,
+			RefreshTokenTTL: refreshTokenTTL,
 		},
 		CORS: CORS{
 			AllowOrigins:     splitList(env("CORS_ALLOW_ORIGINS")),
-			AllowCredentials: parseBool(env("CORS_ALLOW_CREDENTIALS"), false),
-		},
-		Kafka: Kafka{
-			Brokers:         splitList(envOr("KAFKA_BROKERS", defaultKafkaBrokers)),
-			TopicPartitions: parseInt(env("KAFKA_TOPIC_PARTITIONS"), defaultKafkaPartitions),
-			TopicReplicas:   parseInt(env("KAFKA_TOPIC_REPLICAS"), defaultKafkaReplicas),
+			AllowCredentials: allowCredentials,
 		},
 		Mailtrap: Mailtrap{
 			APIToken:         env("MAILTRAP_API_TOKEN"),
@@ -136,8 +150,8 @@ func Load() (Config, error) {
 			DSN:                    env("SENTRY_DSN"),
 			Environment:            envOr("SENTRY_ENVIRONMENT", defaultEnv),
 			Release:                env("SENTRY_RELEASE"),
-			SentryTracesSampleRate: parseFloat(firstNonEmpty(env("SENTRY_TRACES_SAMPLE_RATE"), env("SENTRY_SAMPLE_RATE")), 1),
-			SentryFlushTimeout:     parseDuration(env("SENTRY_FLUSH_TIMEOUT"), defaultSentryFlush),
+			SentryTracesSampleRate: tracesSampleRate,
+			SentryFlushTimeout:     sentryFlushTimeout,
 		},
 		Observability: Observability{
 			ServiceName:      envOr("OBSERVABILITY_SERVICE_NAME", "iam-service-api"),
@@ -146,7 +160,10 @@ func Load() (Config, error) {
 	}
 
 	if err := cfg.validate(); err != nil {
-		return Config{}, err
+		problems = append(problems, err)
+	}
+	if len(problems) > 0 {
+		return Config{}, fmt.Errorf("configuration problems: %w", errors.Join(problems...))
 	}
 
 	return cfg, nil
@@ -167,30 +184,88 @@ func LoadDB() DB {
 func (c Config) validate() error {
 	var problems []error
 
-	for key, value := range map[string]string{
-		"BLUEPRINT_DB_HOST":     c.DB.Host,
-		"BLUEPRINT_DB_PORT":     c.DB.Port,
-		"BLUEPRINT_DB_USERNAME": c.DB.Username,
-		"BLUEPRINT_DB_PASSWORD": c.DB.Password,
-		"BLUEPRINT_DB_DATABASE": c.DB.Database,
-	} {
-		if value == "" {
-			problems = append(problems, fmt.Errorf("%s is required", key))
+	required := []struct {
+		key   string
+		value string
+	}{
+		{key: "BLUEPRINT_DB_HOST", value: c.DB.Host},
+		{key: "BLUEPRINT_DB_PORT", value: c.DB.Port},
+		{key: "BLUEPRINT_DB_USERNAME", value: c.DB.Username},
+		{key: "BLUEPRINT_DB_PASSWORD", value: c.DB.Password},
+		{key: "BLUEPRINT_DB_DATABASE", value: c.DB.Database},
+	}
+	for _, item := range required {
+		if item.value == "" {
+			problems = append(problems, fmt.Errorf("%s is required", item.key))
 		}
 	}
 
 	if len(c.Auth.JWTSecret) < minJWTSecretLength {
 		problems = append(problems, fmt.Errorf("JWT_ACCESS_TOKEN_SECRET must be at least %d characters", minJWTSecretLength))
 	}
-	if len(c.Auth.RefreshSecret) < minJWTSecretLength {
-		problems = append(problems, fmt.Errorf("JWT_REFRESH_TOKEN_SECRET must be at least %d characters", minJWTSecretLength))
-	}
 	if c.Auth.Issuer == "" {
 		problems = append(problems, fmt.Errorf("JWT_ISSUER is required"))
 	}
+	if !validPort(c.HTTP.Port) {
+		problems = append(problems, fmt.Errorf("HTTP_PORT must be an integer between 1 and 65535"))
+	}
+	if c.DB.Port != "" && !validPort(c.DB.Port) {
+		problems = append(problems, fmt.Errorf("BLUEPRINT_DB_PORT must be an integer between 1 and 65535"))
+	}
+	if c.Auth.AccessTokenTTL <= 0 {
+		problems = append(problems, fmt.Errorf("JWT_ACCESS_TOKEN_TTL must be positive"))
+	}
+	if c.Auth.RefreshTokenTTL <= 0 {
+		problems = append(problems, fmt.Errorf("JWT_REFRESH_TOKEN_TTL must be positive"))
+	}
+	if math.IsNaN(c.Sentry.SentryTracesSampleRate) || c.Sentry.SentryTracesSampleRate < 0 || c.Sentry.SentryTracesSampleRate > 1 {
+		problems = append(problems, fmt.Errorf("SENTRY_TRACES_SAMPLE_RATE must be between 0 and 1"))
+	}
+	if c.Sentry.SentryFlushTimeout <= 0 {
+		problems = append(problems, fmt.Errorf("SENTRY_FLUSH_TIMEOUT must be positive"))
+	}
+	for _, proxy := range c.HTTP.TrustedProxies {
+		if net.ParseIP(proxy) != nil {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(proxy); err != nil {
+			problems = append(problems, fmt.Errorf("TRUSTED_PROXIES contains invalid IP or CIDR %q", proxy))
+		}
+	}
+	for _, origin := range c.CORS.AllowOrigins {
+		if origin == "*" {
+			continue
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			problems = append(problems, fmt.Errorf("CORS_ALLOW_ORIGINS contains invalid origin %q", origin))
+		}
+	}
+	if c.CORS.AllowCredentials && (len(c.CORS.AllowOrigins) == 0 || slices.Contains(c.CORS.AllowOrigins, "*")) {
+		problems = append(problems, fmt.Errorf("CORS_ALLOW_CREDENTIALS requires explicit CORS_ALLOW_ORIGINS"))
+	}
+	if address, err := mail.ParseAddress(c.Mailtrap.SenderEmail); err != nil || address.Address != c.Mailtrap.SenderEmail {
+		problems = append(problems, fmt.Errorf("MAILTRAP_SENDER_EMAIL must be a bare email address"))
+	}
+	if c.Mailtrap.APIToken != "" && c.Mailtrap.TemplateUUID == "" {
+		problems = append(problems, fmt.Errorf("MAILTRAP_TEMPLATE_UUID is required when MAILTRAP_API_TOKEN is set"))
+	}
+	configuredURLs := []struct {
+		key string
+		url string
+	}{
+		{key: "MAILTRAP_API_URL", url: c.Mailtrap.APIURL},
+		{key: "PASSWORD_RESET_URL", url: c.Mailtrap.PasswordResetURL},
+	}
+	for _, item := range configuredURLs {
+		parsed, err := url.Parse(item.url)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			problems = append(problems, fmt.Errorf("%s must be an absolute HTTP(S) URL", item.key))
+		}
+	}
 
 	if len(problems) > 0 {
-		return fmt.Errorf("configuration problems: %v", problems)
+		return errors.Join(problems...)
 	}
 
 	return nil
@@ -246,46 +321,40 @@ func splitList(raw string) []string {
 	return items
 }
 
-func parseDuration(raw string, fallback time.Duration) time.Duration {
+func parseDuration(raw string, fallback time.Duration) (time.Duration, error) {
 	if raw == "" {
-		return fallback
+		return fallback, nil
 	}
 	value, err := time.ParseDuration(raw)
 	if err != nil {
-		return fallback
+		return fallback, fmt.Errorf("invalid duration %q: %w", raw, err)
 	}
-	return value
+	return value, nil
 }
 
-func parseBool(raw string, fallback bool) bool {
+func parseBool(raw string, fallback bool) (bool, error) {
 	if raw == "" {
-		return fallback
+		return fallback, nil
 	}
 	value, err := strconv.ParseBool(raw)
 	if err != nil {
-		return fallback
+		return fallback, fmt.Errorf("invalid boolean %q: %w", raw, err)
 	}
-	return value
+	return value, nil
 }
 
-func parseFloat(raw string, fallback float64) float64 {
+func parseFloat(raw string, fallback float64) (float64, error) {
 	if raw == "" {
-		return fallback
+		return fallback, nil
 	}
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		return fallback
+		return fallback, fmt.Errorf("invalid number %q: %w", raw, err)
 	}
-	return value
+	return value, nil
 }
 
-func parseInt(raw string, fallback int) int {
-	if raw == "" {
-		return fallback
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		return fallback
-	}
-	return value
+func validPort(raw string) bool {
+	port, err := strconv.Atoi(raw)
+	return err == nil && port >= 1 && port <= 65535
 }

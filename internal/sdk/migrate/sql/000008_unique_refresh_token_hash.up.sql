@@ -1,7 +1,7 @@
 -- Backstop for refresh-token rotation: the stored token hash must be unique.
 --
--- Tokens now carry a random jti so collisions cannot occur at issuance, but a
--- unique index guarantees the invariant at the storage layer too — a duplicate
+-- Tokens are random 256-bit values so collisions are infeasible at issuance,
+-- but a unique index guarantees the invariant at the storage layer too — a duplicate
 -- hash would make GetRefreshTokenByToken's result row ambiguous, which is what
 -- allowed revoked-token replay to slip through.
 

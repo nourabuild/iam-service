@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/nourabuild/iam-service/internal/sdk/config"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -35,7 +37,7 @@ func mustStartPostgresContainer() (func(context.Context) error, error) {
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).
-				WithStartupTimeout(5*time.Second)),
+				WithStartupTimeout(30*time.Second)),
 	)
 	if err != nil {
 		return nil, err
@@ -111,6 +113,17 @@ func runMigrations() error {
 }
 
 func TestMain(m *testing.M) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := exec.CommandContext(ctx, "docker", "info", "--format", "{{.ServerVersion}}").Run()
+	cancel()
+	if err != nil {
+		if os.Getenv("CI") != "" {
+			log.Fatalf("Docker is required for sqldb tests in CI: %v", err)
+		}
+		log.Printf("skipping sqldb integration tests: Docker is unavailable: %v", err)
+		return
+	}
+
 	teardown, err := mustStartPostgresContainer()
 	if err != nil {
 		log.Fatalf("could not start postgres container: %v", err)
@@ -133,10 +146,15 @@ func TestMain(m *testing.M) {
 
 func mustNew(t *testing.T) Service {
 	t.Helper()
-	srv, err := New()
+	srv, err := New(config.LoadDB())
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("closing database: %v", err)
+		}
+	})
 	return srv
 }
 
@@ -371,6 +389,56 @@ func TestRefreshTokenHashUniqueness(t *testing.T) {
 	}
 }
 
+func TestRotateRefreshToken(t *testing.T) {
+	srv := mustNew(t)
+	ctx := context.Background()
+	user := createTestUser(t, srv, "rotate-token-user", "rotate-token@example.com")
+
+	currentPlaintext := []byte("current-refresh-token")
+	current, err := srv.CreateRefreshToken(ctx, models.NewRefreshToken{
+		UserID:    user.ID,
+		Token:     currentPlaintext,
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateRefreshToken returned error: %v", err)
+	}
+
+	replacementPlaintext := []byte("replacement-refresh-token")
+	rotated, err := srv.RotateRefreshToken(ctx, current.ID, models.NewRefreshToken{
+		UserID:    user.ID,
+		Token:     replacementPlaintext,
+		ExpiresAt: time.Now().UTC().Add(2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("RotateRefreshToken returned error: %v", err)
+	}
+	if rotated.UserID != user.ID {
+		t.Fatalf("rotated token belongs to %s, want %s", rotated.UserID, user.ID)
+	}
+
+	old, err := srv.GetRefreshTokenByToken(ctx, currentPlaintext)
+	if err != nil {
+		t.Fatalf("GetRefreshTokenByToken(current) returned error: %v", err)
+	}
+	if old.RevokedAt == nil {
+		t.Fatal("current token was not revoked")
+	}
+	if _, err := srv.GetRefreshTokenByToken(ctx, replacementPlaintext); err != nil {
+		t.Fatalf("replacement token was not stored: %v", err)
+	}
+
+	// A second concurrent/replayed rotation loses the conditional update.
+	_, err = srv.RotateRefreshToken(ctx, current.ID, models.NewRefreshToken{
+		UserID:    user.ID,
+		Token:     []byte("second-replacement"),
+		ExpiresAt: time.Now().UTC().Add(2 * time.Hour),
+	})
+	if !errors.Is(err, ErrDBNotFound) {
+		t.Fatalf("rotated the same token twice; want ErrDBNotFound, got %v", err)
+	}
+}
+
 func TestDeleteExpiredRefreshTokens(t *testing.T) {
 	srv := mustNew(t)
 	ctx := context.Background()
@@ -461,6 +529,45 @@ func TestUpdateUserPassword(t *testing.T) {
 
 	if err := srv.UpdateUserPassword(ctx, "999999", []byte("x")); !errors.Is(err, ErrDBNotFound) {
 		t.Errorf("expected ErrDBNotFound for unknown user, got %v", err)
+	}
+}
+
+func TestResetPasswordIsAtomicAndRevokesSessions(t *testing.T) {
+	srv := mustNew(t)
+	ctx := context.Background()
+	user := createTestUser(t, srv, "atomic-reset-user", "atomic-reset@example.com")
+
+	if _, err := srv.CreatePasswordResetToken(ctx, models.NewPasswordResetToken{
+		UserID:    user.ID,
+		Token:     "atomic-reset-token",
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("CreatePasswordResetToken returned error: %v", err)
+	}
+	refreshPlaintext := []byte("reset-session-token")
+	if _, err := srv.CreateRefreshToken(ctx, models.NewRefreshToken{
+		UserID:    user.ID,
+		Token:     refreshPlaintext,
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("CreateRefreshToken returned error: %v", err)
+	}
+
+	if err := srv.ResetPassword(ctx, "atomic-reset-token", []byte("new-reset-hash")); err != nil {
+		t.Fatalf("ResetPassword returned error: %v", err)
+	}
+	fetched, err := srv.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID returned error: %v", err)
+	}
+	if string(fetched.Password) != "new-reset-hash" {
+		t.Fatalf("password was not updated: %q", fetched.Password)
+	}
+	if _, err := srv.GetRefreshTokenByToken(ctx, refreshPlaintext); !errors.Is(err, ErrDBNotFound) {
+		t.Fatalf("refresh sessions survived password reset: %v", err)
+	}
+	if err := srv.ResetPassword(ctx, "atomic-reset-token", []byte("another-hash")); !errors.Is(err, ErrDBNotFound) {
+		t.Fatalf("reset token was reused; want ErrDBNotFound, got %v", err)
 	}
 }
 

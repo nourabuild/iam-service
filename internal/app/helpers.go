@@ -41,7 +41,7 @@ func (a *App) storeRefreshToken(ctx context.Context, userID, refreshToken string
 }
 
 // outboxHeaders builds the correlation headers stored alongside an outbox
-// event: the inbound X-Request-ID when present, otherwise the user ID.
+// event, falling back to the affected user ID only when no request ID exists.
 func outboxHeaders(requestID, fallback string) map[string]string {
 	correlationID := requestID
 	if correlationID == "" {
@@ -53,12 +53,15 @@ func outboxHeaders(requestID, fallback string) map[string]string {
 	return map[string]string{kafka.HeaderCorrelationID: correlationID}
 }
 
-func (a *App) report(c *gin.Context, handler, errType string, level slog.Level, err error) {
-	requestID := c.GetHeader("X-Request-ID")
+func requestID(c *gin.Context) string {
 	if value := c.GetString("request_id"); value != "" {
-		requestID = value
+		return value
 	}
-	a.reportBackground(c.Request.Context(), handler, errType, level, err, requestID)
+	return c.GetHeader("X-Request-ID")
+}
+
+func (a *App) report(c *gin.Context, handler, errType string, level slog.Level, err error) {
+	a.reportBackground(c.Request.Context(), handler, errType, level, err, requestID(c))
 }
 
 func (a *App) reportBackground(ctx context.Context, handler, errType string, level slog.Level, err error, requestID string) {

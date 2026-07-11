@@ -1,14 +1,17 @@
+// Package kafka publishes IAM lifecycle events.
 package kafka
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
@@ -32,10 +35,26 @@ type KafkaService struct {
 	client *kgo.Client
 }
 
-func NewKafkaService() KafkaRepository {
-	brokers := splitTrim(getenv("KAFKA_BROKERS", "localhost:9092"))
-	partitions := int32(getenvInt("KAFKA_TOPIC_PARTITIONS", 3))
-	replicas := int16(getenvInt("KAFKA_TOPIC_REPLICAS", 1))
+func NewKafkaService(ctx context.Context) KafkaRepository {
+	brokers := splitTrim(os.Getenv("KAFKA_BROKERS"))
+	if len(brokers) == 0 {
+		slog.InfoContext(ctx, "kafka disabled", "reason", "KAFKA_BROKERS is not configured")
+		return nil
+	}
+
+	partitionsValue, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("KAFKA_TOPIC_PARTITIONS")), 10, 32)
+	if err != nil || partitionsValue <= 0 {
+		slog.WarnContext(ctx, "kafka disabled", "reason", "KAFKA_TOPIC_PARTITIONS must be a positive integer")
+		return nil
+	}
+	partitions := int32(partitionsValue)
+
+	replicasValue, err := strconv.ParseInt(strings.TrimSpace(os.Getenv("KAFKA_TOPIC_REPLICAS")), 10, 16)
+	if err != nil || replicasValue <= 0 {
+		slog.WarnContext(ctx, "kafka disabled", "reason", "KAFKA_TOPIC_REPLICAS must be a positive integer")
+		return nil
+	}
+	replicas := int16(replicasValue)
 
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(brokers...),
@@ -46,26 +65,26 @@ func NewKafkaService() KafkaRepository {
 
 	client, err := kgo.NewClient(opts...)
 	if err != nil {
-		log.Printf("kafka unavailable: %v", err)
+		slog.WarnContext(ctx, "kafka unavailable", "error", err)
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	startupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	if err := client.Ping(ctx); err != nil {
+	if err := client.Ping(startupCtx); err != nil {
 		client.Close()
-		log.Printf("kafka ping failed: %v", err)
+		slog.WarnContext(ctx, "kafka ping failed", "error", err)
 		return nil
 	}
 
 	adm := kadm.NewClient(client)
 	topics := []string{ProduceTopicUserCreated, ProduceTopicUserUpdated}
 
-	resp, err := adm.CreateTopics(ctx, partitions, replicas, nil, topics...)
+	resp, err := adm.CreateTopics(startupCtx, partitions, replicas, nil, topics...)
 	if err != nil {
 		client.Close()
-		log.Printf("kafka create topics failed: %v", err)
+		slog.WarnContext(ctx, "kafka create topics failed", "error", err)
 		return nil
 	}
 
@@ -73,29 +92,23 @@ func NewKafkaService() KafkaRepository {
 		existed := errors.Is(r.Err, kerr.TopicAlreadyExists)
 		if r.Err != nil && !existed {
 			client.Close()
-			log.Printf("kafka topic ensure failed topic=%s: %v", r.Topic, r.Err)
+			slog.WarnContext(ctx, "kafka topic ensure failed", "topic", r.Topic, "error", r.Err)
 			return nil
 		}
-		log.Printf(
-			"kafka topic ensured topic=%s already_existed=%v", r.Topic, existed)
+		slog.InfoContext(ctx, "kafka topic ensured", "topic", r.Topic, "already_existed", existed)
 	}
 
 	return &KafkaService{client: client}
 }
 
-func CorrelationIDHeader(value string) kgo.RecordHeader {
-	return kgo.RecordHeader{Key: HeaderCorrelationID, Value: []byte(value)}
-}
-
 func (s *KafkaService) Produce(ctx context.Context, topic string, key []byte, value any, headers ...kgo.RecordHeader) error {
 	if topic == "" {
-		return nil
+		return errors.New("kafka topic is required")
 	}
 
 	data, err := json.Marshal(value)
 	if err != nil {
-		log.Printf("kafka producer marshal failed topic=%s: %v", topic, err)
-		return err
+		return fmt.Errorf("marshal kafka record for topic %q: %w", topic, err)
 	}
 
 	start := time.Now()
@@ -106,13 +119,13 @@ func (s *KafkaService) Produce(ctx context.Context, topic string, key []byte, va
 		Headers: headers,
 	}).FirstErr()
 	if err != nil {
-		log.Printf("kafka producer send failed topic=%s key=%s bytes=%d elapsed=%s: %v",
-			topic, key, len(data), time.Since(start), err)
-		return err
+		slog.ErrorContext(ctx, "kafka producer send failed",
+			"topic", topic, "key", string(key), "bytes", len(data), "elapsed", time.Since(start), "error", err)
+		return fmt.Errorf("produce kafka record to topic %q: %w", topic, err)
 	}
 
-	log.Printf("kafka producer sent topic=%s key=%s bytes=%d elapsed=%s",
-		topic, key, len(data), time.Since(start))
+	slog.DebugContext(ctx, "kafka producer sent",
+		"topic", topic, "key", string(key), "bytes", len(data), "elapsed", time.Since(start))
 	return nil
 }
 
@@ -120,29 +133,8 @@ func (s *KafkaService) Close() {
 	s.client.Close()
 }
 
-func getenv(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
-
-func getenvInt(k string, def int) int {
-	if v := os.Getenv(k); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
 func splitTrim(s string) []string {
-	parts := strings.Split(s, ",")
-	out := parts[:0]
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
+	return strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
 }

@@ -43,7 +43,6 @@ func main() {
 	slog.SetDefault(logger)
 
 	if err := run(logger); err != nil {
-		// Because AddSource is true, this will explicitly tell you what line failed
 		logger.Error("application startup failed", "error", err)
 		os.Exit(1)
 	}
@@ -85,26 +84,24 @@ func run(logger *slog.Logger) error {
 	var wg sync.WaitGroup
 
 	// Initialize Database service
-	sqlService, err := sqldb.New()
+	sqlService, err := sqldb.New(cfg.DB)
 	if err != nil {
 		return fmt.Errorf("init database: %w", err)
 	}
-	defer sqlService.Close()
+	defer func() {
+		if err := sqlService.Close(); err != nil {
+			logger.Error("close database", "error", err)
+		}
+	}()
 
 	// Initialize JWT service
 	jwtService := jwt.NewTokenService(cfg.Auth)
 
 	// Initialize Mailtrap service
-	emailService := mailtrap.NewMailtrapService(
-		cfg.Mailtrap.APIToken,
-		cfg.Mailtrap.SenderEmail,
-		cfg.Mailtrap.SenderName,
-		cfg.Mailtrap.TemplateUUID,
-		cfg.Mailtrap.PasswordResetURL,
-	)
+	emailService := mailtrap.NewMailtrapService(cfg.Mailtrap)
 
 	// Initialize Kafka producer
-	kafkaService := kafka.NewKafkaService()
+	kafkaService := kafka.NewKafkaService(ctx)
 	if kafkaService != nil {
 		defer kafkaService.Close()
 	}
@@ -120,18 +117,18 @@ func run(logger *slog.Logger) error {
 	// HTTP server with configured timeouts
 	srv := &http.Server{
 		Addr:         ":" + cfg.HTTP.Port,
-		Handler:      iamApp.RegisterRoutes(cfg.Sentry),
+		Handler:      iamApp.RegisterRoutes(cfg),
 		IdleTimeout:  cfg.HTTP.IdleTimeout,
 		ReadTimeout:  cfg.HTTP.ReadTimeout,
 		WriteTimeout: cfg.HTTP.WriteTimeout,
 		ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
 
+	serveErrors := make(chan error, 1)
 	wg.Go(func() {
 		logger.Info("server starting", "addr", srv.Addr, "build", build)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("listen and serve", "error", err)
-			stop() // Cancel context if server crashes
+			serveErrors <- err
 		}
 	})
 
@@ -143,7 +140,7 @@ func run(logger *slog.Logger) error {
 	// Periodically purge expired tokens and delivered outbox events.
 	wg.Go(func() {
 		cleanup := func() {
-			cctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			cctx, cancel := context.WithTimeout(ctx, time.Minute)
 			defer cancel()
 			if err := sqlService.DeleteExpiredRefreshTokens(cctx); err != nil {
 				logger.Error("cleanup expired refresh tokens", "error", err)
@@ -169,18 +166,34 @@ func run(logger *slog.Logger) error {
 		}
 	})
 
-	// Graceful Shutdown Wait
-	<-ctx.Done()
+	// Wait for a shutdown signal or an unexpected listener failure. Preserve
+	// the listener error so startup failures result in a non-zero process exit.
+	var serveErr error
+	select {
+	case <-ctx.Done():
+	case serveErr = <-serveErrors:
+		stop()
+	}
 	logger.Info("shutting down gracefully")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
+	shutdownErr := srv.Shutdown(shutdownCtx)
+	if shutdownErr != nil {
+		logger.Error("graceful HTTP shutdown failed", "error", shutdownErr)
+		if err := srv.Close(); err != nil {
+			logger.Error("force close HTTP server", "error", err)
+		}
 	}
 
 	wg.Wait()
+	if shutdownErr != nil {
+		return fmt.Errorf("shutdown HTTP server: %w", shutdownErr)
+	}
+	if serveErr != nil {
+		return fmt.Errorf("listen and serve: %w", serveErr)
+	}
 	logger.Info("shutdown complete")
 	return nil
 }

@@ -1,3 +1,4 @@
+// Package sentry configures error reporting and Gin request integration.
 package sentry
 
 import (
@@ -13,8 +14,11 @@ import (
 )
 
 func SetupSentry(ctx context.Context, cfg config.Sentry, logger *slog.Logger) (func(context.Context) error, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if cfg.DSN == "" {
-		logger.InfoContext(ctx, "sentry disabled")
+		logger.InfoContext(ctx, "sentry disabled", "reason", "SENTRY_DSN is not configured")
 		return func(context.Context) error { return nil }, nil
 	}
 
@@ -50,13 +54,20 @@ func scrubSentryRequest(event *githubsentry.Event) *githubsentry.Event {
 	}
 	query, err := url.ParseQuery(event.Request.QueryString)
 	if err != nil {
+		// A malformed query cannot be safely inspected for bearer values.
+		event.Request.QueryString = "[Filtered]"
 		return event
 	}
-	if !query.Has("access_token") {
-		return event
+	changed := false
+	for _, key := range []string{"access_token", "refresh_token", "token", "code"} {
+		if query.Has(key) {
+			query.Set(key, "[Filtered]")
+			changed = true
+		}
 	}
-	query.Set("access_token", "[Filtered]")
-	event.Request.QueryString = query.Encode()
+	if changed {
+		event.Request.QueryString = query.Encode()
+	}
 	return event
 }
 

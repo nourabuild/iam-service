@@ -23,12 +23,21 @@ func TestWrap(t *testing.T) {
 }
 
 func TestWithFields(t *testing.T) {
-	err := WithFields(New(http.StatusBadRequest, "validation_failed"), map[string]string{
+	base := New(http.StatusBadRequest, "validation_failed")
+	fields := map[string]string{
 		"email": "required",
-	})
+	}
+	err := WithFields(base, fields)
 
 	if err.Fields["email"] != "required" {
 		t.Fatalf("expected email field to be required, got %s", err.Fields["email"])
+	}
+	if base.Fields != nil {
+		t.Fatal("WithFields mutated the base error")
+	}
+	fields["email"] = "changed"
+	if err.Fields["email"] != "required" {
+		t.Fatal("WithFields retained the caller's mutable map")
 	}
 }
 

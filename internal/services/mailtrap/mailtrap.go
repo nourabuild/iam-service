@@ -1,25 +1,27 @@
+// Package mailtrap sends transactional email through the Mailtrap API.
 package mailtrap
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/mail"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/nourabuild/iam-service/internal/sdk/config"
 )
 
-const mailtrapSendURL = "https://send.api.mailtrap.io/api/send"
-
 type MailtrapRepository interface {
-	SendPasswordResetEmail(to, token string) error
+	SendPasswordResetEmail(ctx context.Context, to, token string) error
 }
 
 type MailtrapService struct {
 	apiToken         string
+	apiURL           string
 	fromEmail        string
 	fromName         string
 	templateUUID     string
@@ -27,27 +29,30 @@ type MailtrapService struct {
 	httpClient       *http.Client
 }
 
-func NewMailtrapService(
-	apiToken, fromEmail, fromName, templateUUID, passwordResetURL string,
-) *MailtrapService {
+func NewMailtrapService(cfg config.Mailtrap) *MailtrapService {
 	return &MailtrapService{
-		apiToken:         apiToken,
-		fromEmail:        fromEmail,
-		fromName:         fromName,
-		templateUUID:     templateUUID,
-		passwordResetURL: passwordResetURL,
+		apiToken:         cfg.APIToken,
+		apiURL:           cfg.APIURL,
+		fromEmail:        cfg.SenderEmail,
+		fromName:         cfg.SenderName,
+		templateUUID:     cfg.TemplateUUID,
+		passwordResetURL: cfg.PasswordResetURL,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 	}
 }
 
-func (m *MailtrapService) SendPasswordResetEmail(to, token string) error {
+func (m *MailtrapService) SendPasswordResetEmail(ctx context.Context, to, token string) error {
 	to = strings.TrimSpace(to)
 	token = strings.TrimSpace(token)
 
-	if _, err := mail.ParseAddress(to); err != nil {
+	address, err := mail.ParseAddress(to)
+	if err != nil {
 		return fmt.Errorf("invalid recipient email: %w", err)
+	}
+	if address.Address != to {
+		return fmt.Errorf("invalid recipient email: bare address required")
 	}
 
 	if token == "" {
@@ -76,13 +81,16 @@ func (m *MailtrapService) SendPasswordResetEmail(to, token string) error {
 		},
 	}
 
-	return m.send(payload)
+	return m.send(ctx, payload)
 }
 
 func (m *MailtrapService) buildPasswordResetURL(token string) (string, error) {
 	resetURL, err := url.Parse(m.passwordResetURL)
 	if err != nil {
 		return "", fmt.Errorf("invalid password reset url: %w", err)
+	}
+	if resetURL.Host == "" || (resetURL.Scheme != "http" && resetURL.Scheme != "https") {
+		return "", fmt.Errorf("invalid password reset url: absolute http(s) URL required")
 	}
 
 	query := resetURL.Query()
@@ -92,13 +100,13 @@ func (m *MailtrapService) buildPasswordResetURL(token string) (string, error) {
 	return resetURL.String(), nil
 }
 
-func (m *MailtrapService) send(payload mailtrapTemplateRequest) error {
+func (m *MailtrapService) send(ctx context.Context, payload mailtrapTemplateRequest) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal mailtrap payload: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, mailtrapSendURL, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.apiURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create mailtrap request: %w", err)
 	}
@@ -113,13 +121,9 @@ func (m *MailtrapService) send(payload mailtrapTemplateRequest) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-
-		return fmt.Errorf(
-			"mailtrap request failed with status %d: %s",
-			resp.StatusCode,
-			strings.TrimSpace(string(respBody)),
-		)
+		// Provider response bodies can echo recipient data. Keep PII out of
+		// application logs while retaining the actionable HTTP status.
+		return fmt.Errorf("mailtrap request failed with status %d", resp.StatusCode)
 	}
 
 	return nil
@@ -141,122 +145,3 @@ type passwordResetTemplateVariables struct {
 	UserEmail     string `json:"user_email"`
 	PassResetLink string `json:"pass_reset_link"`
 }
-
-// // Package mailtrap provides a client for sending emails via the Mailtrap API.
-// package mailtrap
-
-// import (
-// 	"bytes"
-// 	"encoding/json"
-// 	"fmt"
-// 	"net/http"
-// 	"os"
-// 	"time"
-// )
-
-// type MailtrapService struct {
-// 	apiKey       string
-// 	apiURL       string
-// 	fromEmail    string
-// 	fromName     string
-// 	resetURL     string
-// 	templateUUID string
-// 	httpClient   *http.Client
-// }
-
-// // NewMailtrapService creates a new email service instance
-// func NewMailtrapService() *MailtrapService {
-// 	apiURL := os.Getenv("MAILTRAP_API_URL")
-// 	if apiURL == "" {
-// 		apiURL = "https://send.api.mailtrap.io/api/send" // Default to production
-// 	}
-
-// 	fromEmail := os.Getenv("MAILTRAP_SENDER_EMAIL")
-// 	if fromEmail == "" {
-// 		fromEmail = "noreply@example.com"
-// 	}
-
-// 	fromName := os.Getenv("MAILTRAP_SENDER_NAME")
-// 	if fromName == "" {
-// 		fromName = "IAM Service"
-// 	}
-
-// 	// Where the reset link in the email points. Must match the frontend for
-// 	// the environment this instance serves — a staging IAM must not send
-// 	// users to the production reset page.
-// 	resetURL := os.Getenv("PASSWORD_RESET_URL")
-// 	if resetURL == "" {
-// 		resetURL = "https://meets.noura.software/reset-password"
-// 	}
-
-// 	templateUUID := os.Getenv("MAILTRAP_TEMPLATE_UUID")
-// 	if templateUUID == "" {
-// 		templateUUID = "76de4eda-254e-41ed-87f8-a2fe114b616b"
-// 	}
-
-// 	return &MailtrapService{
-// 		apiKey:       os.Getenv("MAILTRAP_API_TOKEN"),
-// 		apiURL:       apiURL,
-// 		fromEmail:    fromEmail,
-// 		fromName:     fromName,
-// 		resetURL:     resetURL,
-// 		templateUUID: templateUUID,
-// 		httpClient: &http.Client{
-// 			Timeout: 10 * time.Second,
-// 		},
-// 	}
-// }
-
-// type MailtrapRepository interface {
-// 	SendPasswordResetEmail(to, token string) error
-// }
-
-// func (m *MailtrapService) SendPasswordResetEmail(to, token string) error {
-// 	resetURL := fmt.Sprintf("%s?token=%s", m.resetURL, token)
-
-// 	reqBody := map[string]interface{}{
-// 		"from": map[string]string{
-// 			"email": m.fromEmail,
-// 			"name":  m.fromName,
-// 		},
-// 		"to": []map[string]string{
-// 			{"email": to},
-// 		},
-// 		"template_uuid": m.templateUUID,
-// 		"template_variables": map[string]string{
-// 			"user_email":      to,
-// 			"pass_reset_link": resetURL,
-// 		},
-// 	}
-
-// 	jsonData, err := json.Marshal(reqBody)
-// 	if err != nil {
-// 		return fmt.Errorf("marshaling email request: %w", err)
-// 	}
-
-// 	httpReq, err := http.NewRequest("POST", m.apiURL, bytes.NewBuffer(jsonData))
-// 	if err != nil {
-// 		return fmt.Errorf("creating HTTP request: %w", err)
-// 	}
-
-// 	httpReq.Header.Set("Content-Type", "application/json")
-// 	httpReq.Header.Set("Authorization", "Bearer "+m.apiKey)
-
-// 	resp, err := m.httpClient.Do(httpReq)
-// 	if err != nil {
-// 		return fmt.Errorf("sending email request: %w", err)
-// 	}
-// 	defer resp.Body.Close()
-
-// 	if resp.StatusCode != http.StatusOK {
-// 		// Read response body for detailed error message. Recipient addresses
-// 		// are deliberately kept out of logs and error strings (PII).
-// 		var errBody bytes.Buffer
-// 		if _, readErr := errBody.ReadFrom(resp.Body); readErr == nil {
-// 			return fmt.Errorf("mailtrap API returned status %d: %s", resp.StatusCode, errBody.String())
-// 		}
-// 		return fmt.Errorf("mailtrap API returned status %d", resp.StatusCode)
-// 	}
-
-// 	return nil
-// }

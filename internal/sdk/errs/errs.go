@@ -1,3 +1,4 @@
+// Package errs defines errors that can be safely mapped to HTTP responses.
 package errs
 
 import (
@@ -33,8 +34,19 @@ func Wrap(err error, status int, key string) *Error {
 }
 
 func WithFields(err *Error, fields map[string]string) *Error {
-	err.Fields = fields
-	return err
+	if err == nil {
+		return nil
+	}
+	clone := *err
+	if len(fields) == 0 {
+		clone.Fields = nil
+		return &clone
+	}
+	clone.Fields = make(map[string]string, len(fields))
+	for key, value := range fields {
+		clone.Fields[key] = value
+	}
+	return &clone
 }
 
 func From(err error) (*Error, bool) {

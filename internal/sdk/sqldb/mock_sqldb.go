@@ -149,6 +149,26 @@ func (m *mockService) GetRefreshTokenByToken(ctx context.Context, token []byte) 
 	return refreshToken, nil
 }
 
+// RotateRefreshToken implements [Service].
+func (m *mockService) RotateRefreshToken(_ context.Context, currentTokenID string, token models.NewRefreshToken) (models.RefreshToken, error) {
+	if currentTokenID == "missing_refresh_token" {
+		return models.RefreshToken{}, ErrDBNotFound
+	}
+	if token.UserID == "db_create_refresh_token_error" {
+		return models.RefreshToken{}, errors.New("error rotating refresh token")
+	}
+
+	now := time.Now().UTC()
+	return models.RefreshToken{
+		ID:        "rotated-refresh-token-id",
+		UserID:    token.UserID,
+		Token:     token.Token,
+		ExpiresAt: token.ExpiresAt,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil
+}
+
 // GetUserByAccount implements [Service].
 func (m *mockService) GetUserByAccount(ctx context.Context, account string) (models.User, error) {
 	if account == "db_get_user_error" {
@@ -281,8 +301,28 @@ func (m *mockService) RevokeRefreshToken(ctx context.Context, tokenID string) er
 	return nil
 }
 
+// ResetPassword implements [Service].
+func (m *mockService) ResetPassword(_ context.Context, token string, _ []byte) error {
+	switch token {
+	case "invalid-reset-token":
+		return ErrDBNotFound
+	case "db_get_reset_token_error":
+		return errors.New("error resetting password")
+	default:
+		return nil
+	}
+}
+
 // UpdateUserPassword implements [Service].
 func (m *mockService) UpdateUserPassword(ctx context.Context, userID string, newPassword []byte) error {
+	if userID == "db_update_user_password_error" {
+		return errors.New("error updating user password")
+	}
+	return nil
+}
+
+// UpdateUserPasswordAndRevokeTokens implements [Service].
+func (m *mockService) UpdateUserPasswordAndRevokeTokens(_ context.Context, userID string, _ []byte) error {
 	if userID == "db_update_user_password_error" {
 		return errors.New("error updating user password")
 	}

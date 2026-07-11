@@ -1,3 +1,4 @@
+// Package observability configures application metrics and tracing.
 package observability
 
 import (
@@ -40,12 +41,7 @@ func Metrics() gin.HandlerFunc {
 			route = "unmatched"
 		}
 		status := strconv.Itoa(c.Writer.Status())
-		labels := prometheus.Labels{
-			"method": c.Request.Method,
-			"route":  route,
-			"status": status,
-		}
-		httpRequestsTotal.With(labels).Inc()
-		httpRequestDuration.With(labels).Observe(time.Since(start).Seconds())
+		httpRequestsTotal.WithLabelValues(c.Request.Method, route, status).Inc()
+		httpRequestDuration.WithLabelValues(c.Request.Method, route, status).Observe(time.Since(start).Seconds())
 	}
 }

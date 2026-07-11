@@ -1,8 +1,8 @@
+// Package jwt issues and validates access tokens and creates refresh tokens.
 package jwt
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 
@@ -41,7 +41,6 @@ type TokenPair struct {
 	AccessToken           string
 	AccessTokenExpiresAt  time.Time
 	RefreshToken          string
-	RefreshTokenHash      []byte
 	RefreshTokenExpiresAt time.Time
 }
 
@@ -60,7 +59,7 @@ func (m *TokenService) IssuePair(user models.User, now time.Time) (TokenPair, er
 		return TokenPair{}, err
 	}
 
-	refreshToken, refreshHash, err := NewRefreshToken()
+	refreshToken, err := NewRefreshToken()
 	if err != nil {
 		return TokenPair{}, err
 	}
@@ -69,7 +68,6 @@ func (m *TokenService) IssuePair(user models.User, now time.Time) (TokenPair, er
 		AccessToken:           accessToken,
 		AccessTokenExpiresAt:  accessExpiresAt,
 		RefreshToken:          refreshToken,
-		RefreshTokenHash:      refreshHash,
 		RefreshTokenExpiresAt: now.Add(m.refreshTokenTTL),
 	}, nil
 }
@@ -105,14 +103,14 @@ func (m *TokenService) ParseAccessToken(tokenString string) (models.Principal, e
 			return nil, errors.New("unexpected signing method")
 		}
 		return m.secret, nil
-	}, jwt.WithIssuer(m.issuer), jwt.WithExpirationRequired())
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithIssuer(m.issuer), jwt.WithExpirationRequired())
 	if err != nil || !token.Valid {
 		if err == nil {
 			err = errors.New("token is invalid")
 		}
 		return models.Principal{}, errs.Wrap(err, errs.ErrUnauthorized.Status, errs.ErrUnauthorized.Key)
 	}
-	if claims.TokenType != "" && claims.TokenType != accessTokenType {
+	if claims.TokenType != accessTokenType {
 		return models.Principal{}, errs.Wrap(errors.New("token type is not access"), errs.ErrUnauthorized.Status, errs.ErrUnauthorized.Key)
 	}
 	if claims.Subject == "" {
@@ -122,7 +120,7 @@ func (m *TokenService) ParseAccessToken(tokenString string) (models.Principal, e
 }
 
 func roleForUser(user models.User) string {
-	if user.Role != "" {
+	if user.Role.Valid() {
 		return string(user.Role)
 	}
 	if user.IsAdmin {
@@ -132,8 +130,8 @@ func roleForUser(user models.User) string {
 }
 
 func roleForClaims(claims *Claims) models.Role {
-	if claims.Role != "" {
-		return models.Role(claims.Role)
+	if role := models.Role(claims.Role); role.Valid() {
+		return role
 	}
 	if claims.IsAdmin {
 		return models.RoleAdmin
@@ -141,17 +139,10 @@ func roleForClaims(claims *Claims) models.Role {
 	return models.RoleUser
 }
 
-func NewRefreshToken() (string, []byte, error) {
+func NewRefreshToken() (string, error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", nil, err
+		return "", err
 	}
-	token := base64.RawURLEncoding.EncodeToString(b[:])
-	hash := HashRefreshToken(token)
-	return token, hash, nil
-}
-
-func HashRefreshToken(token string) []byte {
-	sum := sha256.Sum256([]byte(token))
-	return sum[:]
+	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }

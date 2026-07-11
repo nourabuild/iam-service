@@ -64,7 +64,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 		return
 	}
 
-	user, err := a.db.UpdateUser(ctx, userID, req, userUpdatedOutbox(c.GetHeader("X-Request-ID")))
+	user, err := a.db.UpdateUser(ctx, userID, req, userUpdatedOutbox(requestID(c)))
 	if err != nil {
 		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
 			writeError(c, http.StatusConflict, "account_already_taken", nil)
@@ -138,7 +138,7 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 		return
 	}
 
-	user, err := a.db.PromoteUserToAdmin(ctx, userID, userUpdatedOutbox(c.GetHeader("X-Request-ID")))
+	user, err := a.db.PromoteUserToAdmin(ctx, userID, userUpdatedOutbox(requestID(c)))
 	if err != nil {
 		a.report(c, "promote_user", "db", slog.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
@@ -160,7 +160,7 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 		return
 	}
 
-	user, err := a.db.DemoteUserFromAdmin(c.Request.Context(), userID, userUpdatedOutbox(c.GetHeader("X-Request-ID")))
+	user, err := a.db.DemoteUserFromAdmin(c.Request.Context(), userID, userUpdatedOutbox(requestID(c)))
 	if err != nil {
 		a.report(c, "demote_user", "db", slog.LevelError, err)
 		if errors.Is(err, sqldb.ErrDBNotFound) {
@@ -247,19 +247,12 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 		return
 	}
 
-	// Update password
-	err = a.db.UpdateUserPassword(c.Request.Context(), userID, hashedPassword)
+	// Update the password and revoke all refresh sessions atomically.
+	err = a.db.UpdateUserPasswordAndRevokeTokens(c.Request.Context(), userID, hashedPassword)
 	if err != nil {
 		a.report(c, "change_password", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_update_password_error", nil)
 		return
-	}
-
-	// Optionally revoke all refresh tokens for security (force re-login on all devices)
-	err = a.db.DeleteRefreshTokensByUserID(c.Request.Context(), userID)
-	if err != nil {
-		// Log error but don't fail the request
-		a.report(c, "change_password", "db", slog.LevelWarn, err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

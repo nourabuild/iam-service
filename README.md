@@ -15,7 +15,7 @@ The service operates in a microservices environment and exposes authentication f
 
 ## Getting Started
 
-1. Copy the environment template and fill in the required values (JWT secrets and database settings — see the comments in the file):
+1. Copy the environment template and fill in the required values (the JWT signing secret and database settings — see the comments in the file):
 
 ```bash
 cp .env.example .env
@@ -45,18 +45,24 @@ The API is served at `http://localhost:10067/api/v1`. Verify with:
 curl http://localhost:10067/api/v1/health/readiness
 ```
 
+Prometheus metrics are exposed at `http://localhost:10067/metrics`; restrict
+this endpoint to your monitoring network in deployed environments.
+
 ## Development
 
-Run the handler test suite with coverage report:
+Run all tests. Database integration tests use testcontainers when Docker is
+available and are skipped locally otherwise (CI requires Docker):
 
 ```bash
 make test
 ```
 
-Run all tests including database integration tests (requires Docker for testcontainers):
+Run the same suite under the race detector, or generate a handler coverage
+report:
 
 ```bash
-go test ./internal/...
+make test-race
+make coverage
 ```
 
 Lint (vet + staticcheck):
@@ -86,3 +92,12 @@ Migrations live in `internal/sdk/migrate/sql` and are also applied automatically
 ## CI
 
 GitHub Actions runs build, vet, staticcheck, and the full test suite on every push and pull request (`.github/workflows/ci.yml`).
+
+## Architecture contracts
+
+- Rate limiting is deliberately per-IP and in-process. Production deployments
+  should enforce shared limits at the API gateway; do not turn the service
+  limiter into a distributed subsystem.
+- User lifecycle events use a transactional outbox and at-least-once Kafka
+  delivery. Consumers must be idempotent. A crash after Kafka acknowledges an
+  event but before the outbox row is marked can deliver that event again.

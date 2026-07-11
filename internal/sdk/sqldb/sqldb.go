@@ -7,12 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
+	"net"
+	"net/url"
 	"strconv"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "github.com/joho/godotenv/autoload"
+	"github.com/nourabuild/iam-service/internal/sdk/config"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
@@ -20,20 +21,13 @@ import (
 // https://github.com/lib/pq/blob/master/error.go#L178
 const (
 	uniqueViolation     = "23505"
-	undefinedTable      = "42P01"
 	foreignKeyViolation = "23503"
-	checkViolation      = "23514"
-	notNullViolation    = "23502"
 )
 
 var (
 	ErrDBNotFound          = sql.ErrNoRows
 	ErrDBDuplicatedEntry   = errors.New("duplicated entry")
-	ErrUndefinedTable      = errors.New("undefined table")
 	ErrForeignKeyViolation = errors.New("foreign key violation")
-	ErrCheckViolation      = errors.New("check constraint violation")
-	ErrNotNullViolation    = errors.New("not null violation")
-	ErrTransactionFailed   = errors.New("transaction failed")
 )
 
 // Service represents a service that interacts with a database.
@@ -66,6 +60,7 @@ type Service interface {
 	// Refresh token operations
 	CreateRefreshToken(ctx context.Context, token models.NewRefreshToken) (models.RefreshToken, error)
 	GetRefreshTokenByToken(ctx context.Context, token []byte) (models.RefreshToken, error)
+	RotateRefreshToken(ctx context.Context, currentTokenID string, token models.NewRefreshToken) (models.RefreshToken, error)
 	RevokeRefreshToken(ctx context.Context, tokenID string) error
 	DeleteExpiredRefreshTokens(ctx context.Context) error
 	DeleteRefreshTokensByUserID(ctx context.Context, userID string) error
@@ -73,10 +68,12 @@ type Service interface {
 	// Password reset token operations
 	CreatePasswordResetToken(ctx context.Context, token models.NewPasswordResetToken) (models.PasswordResetToken, error)
 	ConsumePasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error)
+	ResetPassword(ctx context.Context, token string, newPassword []byte) error
 	DeleteExpiredPasswordResetTokens(ctx context.Context) error
 
 	// Password operations
 	UpdateUserPassword(ctx context.Context, userID string, newPassword []byte) error
+	UpdateUserPasswordAndRevokeTokens(ctx context.Context, userID string, newPassword []byte) error
 }
 
 type service struct {
@@ -84,30 +81,19 @@ type service struct {
 	database string
 }
 
-var dbInstance *service
-
-func New() (Service, error) {
-	// Reuse Connection
-	if dbInstance != nil {
-		return dbInstance, nil
+func New(cfg config.DB) (Service, error) {
+	connectionURL := url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(cfg.Username, cfg.Password),
+		Host:   net.JoinHostPort(cfg.Host, cfg.Port),
+		Path:   cfg.Database,
 	}
+	query := connectionURL.Query()
+	query.Set("sslmode", cfg.SSLMode)
+	query.Set("search_path", cfg.Schema)
+	connectionURL.RawQuery = query.Encode()
 
-	var (
-		database = os.Getenv("BLUEPRINT_DB_DATABASE")
-		password = os.Getenv("BLUEPRINT_DB_PASSWORD")
-		username = os.Getenv("BLUEPRINT_DB_USERNAME")
-		port     = os.Getenv("BLUEPRINT_DB_PORT")
-		host     = os.Getenv("BLUEPRINT_DB_HOST")
-		schema   = os.Getenv("BLUEPRINT_DB_SCHEMA")
-		sslmode  = os.Getenv("BLUEPRINT_DB_SSLMODE")
-	)
-	if sslmode == "" {
-		sslmode = "disable" // local-dev default; set to "require" or stricter in deployed environments
-	}
-
-	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s&search_path=%s",
-		username, password, host, port, database, sslmode, schema)
-	db, err := sql.Open("pgx", connStr)
+	db, err := sql.Open("pgx", connectionURL.String())
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -125,14 +111,13 @@ func New() (Service, error) {
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("pinging database %q at %s:%s: %w", database, host, port, err)
+		return nil, fmt.Errorf("pinging database %q at %s: %w", cfg.Database, connectionURL.Host, err)
 	}
 
-	dbInstance = &service{
+	return &service{
 		db:       db,
-		database: database,
-	}
-	return dbInstance, nil
+		database: cfg.Database,
+	}, nil
 }
 
 // Health checks the health of the database connection by pinging the database.
@@ -142,16 +127,12 @@ func (s *service) Health() map[string]string {
 	defer cancel()
 
 	stats := make(map[string]string)
-	const (
-		openConnectionsWarn = 40
-		waitCountWarn       = 1000
-	)
 
 	// Ping the database
 	err := s.db.PingContext(ctx)
 	if err != nil {
 		stats["status"] = "down"
-		stats["error"] = fmt.Sprintf("db down: %v", err)
+		stats["error"] = "database unavailable"
 		log.Printf("db down: %v", err)
 		return stats
 	}
@@ -170,23 +151,6 @@ func (s *service) Health() map[string]string {
 	stats["max_idle_closed"] = strconv.FormatInt(dbStats.MaxIdleClosed, 10)
 	stats["max_lifetime_closed"] = strconv.FormatInt(dbStats.MaxLifetimeClosed, 10)
 
-	// Evaluate stats to provide a health message
-	if dbStats.OpenConnections > openConnectionsWarn {
-		stats["message"] = "The database is experiencing heavy load."
-	}
-
-	if dbStats.WaitCount > waitCountWarn {
-		stats["message"] = "The database has a high number of wait events, indicating potential bottlenecks."
-	}
-
-	if dbStats.MaxIdleClosed > int64(dbStats.OpenConnections)/2 {
-		stats["message"] = "Many idle connections are being closed, consider revising the connection pool settings."
-	}
-
-	if dbStats.MaxLifetimeClosed > int64(dbStats.OpenConnections)/2 {
-		stats["message"] = "Many connections are being closed due to max lifetime, consider increasing max lifetime or revising the connection usage pattern."
-	}
-
 	return stats
 }
 
@@ -195,8 +159,11 @@ func (s *service) Health() map[string]string {
 // If the connection is successfully closed, it returns nil.
 // If an error occurs while closing the connection, it returns the error.
 func (s *service) Close() error {
-	log.Printf("Disconnected from database: %s", s.database)
-	return s.db.Close()
+	if err := s.db.Close(); err != nil {
+		return fmt.Errorf("closing database %q: %w", s.database, err)
+	}
+	log.Printf("disconnected from database: %s", s.database)
+	return nil
 }
 
 // ---------------------------------------------
@@ -357,7 +324,7 @@ func (s *service) ListUsers(ctx context.Context) ([]models.User, error) {
 	}
 	defer rows.Close()
 
-	var users []models.User
+	users := make([]models.User, 0)
 	for rows.Next() {
 		user, err := scanUser(rows)
 		if err != nil {
@@ -508,6 +475,48 @@ func (s *service) GetRefreshTokenByToken(ctx context.Context, token []byte) (mod
 	return refreshToken, nil
 }
 
+// RotateRefreshToken atomically revokes currentTokenID and inserts its
+// replacement. The conditional UPDATE ensures concurrent uses of the same
+// token cannot both mint a new session.
+func (s *service) RotateRefreshToken(ctx context.Context, currentTokenID string, newToken models.NewRefreshToken) (models.RefreshToken, error) {
+	const query = `
+		WITH revoked AS (
+			UPDATE auth.refresh_tokens
+			SET revoked_at = CURRENT_TIMESTAMP,
+			    updated_at = CURRENT_TIMESTAMP
+			WHERE id = $1
+			AND user_id = $2
+			AND revoked_at IS NULL
+			AND expires_at > CURRENT_TIMESTAMP
+			RETURNING user_id
+		)
+		INSERT INTO auth.refresh_tokens (user_id, token, expires_at)
+		SELECT user_id, $3, $4 FROM revoked
+		RETURNING id::text, user_id::text, token, expires_at, revoked_at, created_at, updated_at
+	`
+
+	rotated, err := scanRefreshToken(s.db.QueryRowContext(
+		ctx,
+		query,
+		currentTokenID,
+		newToken.UserID,
+		hashTokenBytes(newToken.Token),
+		newToken.ExpiresAt,
+	))
+	if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return models.RefreshToken{}, ErrDBNotFound
+		case isPgError(err, uniqueViolation):
+			return models.RefreshToken{}, ErrDBDuplicatedEntry
+		default:
+			return models.RefreshToken{}, fmt.Errorf("rotating refresh token: %w", err)
+		}
+	}
+
+	return rotated, nil
+}
+
 // RevokeRefreshToken marks a refresh token as revoked.
 func (s *service) RevokeRefreshToken(ctx context.Context, tokenID string) error {
 	const query = `
@@ -551,12 +560,16 @@ func (s *service) DeleteExpiredRefreshTokens(ctx context.Context) error {
 
 // DeleteRefreshTokensByUserID removes all refresh tokens for a specific user.
 func (s *service) DeleteRefreshTokensByUserID(ctx context.Context, userID string) error {
+	return deleteRefreshTokensByUserID(ctx, s.db, userID)
+}
+
+func deleteRefreshTokensByUserID(ctx context.Context, q querier, userID string) error {
 	const query = `
 		DELETE FROM auth.refresh_tokens
 		WHERE user_id = $1
 	`
 
-	_, err := s.db.ExecContext(ctx, query, userID)
+	_, err := q.ExecContext(ctx, query, userID)
 	if err != nil {
 		return fmt.Errorf("deleting refresh tokens for user: %w", err)
 	}
@@ -607,6 +620,10 @@ func (s *service) CreatePasswordResetToken(ctx context.Context, newToken models.
 // concurrent requests presenting the same token can't both succeed: the
 // second UPDATE matches zero rows and gets ErrDBNotFound.
 func (s *service) ConsumePasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error) {
+	return consumePasswordResetToken(ctx, s.db, token)
+}
+
+func consumePasswordResetToken(ctx context.Context, q querier, token string) (models.PasswordResetToken, error) {
 	const query = `
 		UPDATE auth.password_reset_tokens
 		SET used_at = CURRENT_TIMESTAMP
@@ -617,7 +634,7 @@ func (s *service) ConsumePasswordResetToken(ctx context.Context, token string) (
 	`
 
 	var resetToken models.PasswordResetToken
-	err := s.db.QueryRowContext(ctx, query, hashTokenString(token)).Scan(
+	err := q.QueryRowContext(ctx, query, hashTokenString(token)).Scan(
 		&resetToken.ID,
 		&resetToken.UserID,
 		&resetToken.Token,
@@ -634,6 +651,32 @@ func (s *service) ConsumePasswordResetToken(ctx context.Context, token string) (
 	}
 
 	return resetToken, nil
+}
+
+// ResetPassword atomically consumes a reset token, changes the password, and
+// revokes every existing refresh token. Any failure rolls the whole operation
+// back, so a transient database error cannot burn the one-time token.
+func (s *service) ResetPassword(ctx context.Context, token string, newPassword []byte) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning password reset transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	resetToken, err := consumePasswordResetToken(ctx, tx, token)
+	if err != nil {
+		return err
+	}
+	if err := updateUserPassword(ctx, tx, resetToken.UserID, newPassword); err != nil {
+		return err
+	}
+	if err := deleteRefreshTokensByUserID(ctx, tx, resetToken.UserID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing password reset transaction: %w", err)
+	}
+	return nil
 }
 
 // DeleteExpiredPasswordResetTokens removes all expired or used password reset tokens.
@@ -657,6 +700,10 @@ func (s *service) DeleteExpiredPasswordResetTokens(ctx context.Context) error {
 
 // UpdateUserPassword updates a user's password.
 func (s *service) UpdateUserPassword(ctx context.Context, userID string, newPassword []byte) error {
+	return updateUserPassword(ctx, s.db, userID, newPassword)
+}
+
+func updateUserPassword(ctx context.Context, q querier, userID string, newPassword []byte) error {
 	const query = `
 		UPDATE auth.users
 		SET password = $1,
@@ -664,7 +711,7 @@ func (s *service) UpdateUserPassword(ctx context.Context, userID string, newPass
 		WHERE id = $2
 	`
 
-	result, err := s.db.ExecContext(ctx, query, newPassword, userID)
+	result, err := q.ExecContext(ctx, query, newPassword, userID)
 	if err != nil {
 		return fmt.Errorf("updating user password: %w", err)
 	}
@@ -678,6 +725,27 @@ func (s *service) UpdateUserPassword(ctx context.Context, userID string, newPass
 		return ErrDBNotFound
 	}
 
+	return nil
+}
+
+// UpdateUserPasswordAndRevokeTokens changes a password and invalidates all
+// refresh sessions in one transaction.
+func (s *service) UpdateUserPasswordAndRevokeTokens(ctx context.Context, userID string, newPassword []byte) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning password change transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	if err := updateUserPassword(ctx, tx, userID, newPassword); err != nil {
+		return err
+	}
+	if err := deleteRefreshTokensByUserID(ctx, tx, userID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing password change transaction: %w", err)
+	}
 	return nil
 }
 
@@ -712,11 +780,11 @@ func scanUser(scanner rowScanner) (models.User, error) {
 		return models.User{}, err
 	}
 
-	user.Bio = StringPtr(bio)
-	user.DOB = StringPtr(dob)
-	user.City = StringPtr(city)
-	user.Phone = StringPtr(phone)
-	user.AvatarPhotoID = Int32Ptr(avatarPhotoID)
+	user.Bio = stringPtr(bio)
+	user.DOB = stringPtr(dob)
+	user.City = stringPtr(city)
+	user.Phone = stringPtr(phone)
+	user.AvatarPhotoID = int32Ptr(avatarPhotoID)
 
 	return user, nil
 }
@@ -754,121 +822,17 @@ func isPgError(err error, code string) bool {
 	return false
 }
 
-// NullString creates a sql.NullString from a string pointer.
-func NullString(s *string) sql.NullString {
-	if s == nil {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: *s, Valid: true}
-}
-
-// NullInt64 creates a sql.NullInt64 from an int64 pointer.
-func NullInt64(i *int64) sql.NullInt64 {
-	if i == nil {
-		return sql.NullInt64{}
-	}
-	return sql.NullInt64{Int64: *i, Valid: true}
-}
-
-// NullFloat64 creates a sql.NullFloat64 from a float64 pointer.
-func NullFloat64(f *float64) sql.NullFloat64 {
-	if f == nil {
-		return sql.NullFloat64{}
-	}
-	return sql.NullFloat64{Float64: *f, Valid: true}
-}
-
-// NullBool creates a sql.NullBool from a bool pointer.
-func NullBool(b *bool) sql.NullBool {
-	if b == nil {
-		return sql.NullBool{}
-	}
-	return sql.NullBool{Bool: *b, Valid: true}
-}
-
-// NullTime creates a sql.NullTime from a time.Time pointer.
-func NullTime(t *time.Time) sql.NullTime {
-	if t == nil {
-		return sql.NullTime{}
-	}
-	return sql.NullTime{Time: *t, Valid: true}
-}
-
-// StringPtr returns a pointer to a string from sql.NullString.
-func StringPtr(ns sql.NullString) *string {
+func stringPtr(ns sql.NullString) *string {
 	if !ns.Valid {
 		return nil
 	}
 	return &ns.String
 }
 
-// Int32Ptr returns a pointer to an int from sql.NullInt32.
-func Int32Ptr(ni sql.NullInt32) *int {
+func int32Ptr(ni sql.NullInt32) *int {
 	if !ni.Valid {
 		return nil
 	}
 	intVal := int(ni.Int32)
 	return &intVal
-}
-
-// Int64Ptr returns a pointer to an int64 from sql.NullInt64.
-func Int64Ptr(ni sql.NullInt64) *int64 {
-	if !ni.Valid {
-		return nil
-	}
-	return &ni.Int64
-}
-
-// Float64Ptr returns a pointer to a float64 from sql.NullFloat64.
-func Float64Ptr(nf sql.NullFloat64) *float64 {
-	if !nf.Valid {
-		return nil
-	}
-	return &nf.Float64
-}
-
-// BoolPtr returns a pointer to a bool from sql.NullBool.
-func BoolPtr(nb sql.NullBool) *bool {
-	if !nb.Valid {
-		return nil
-	}
-	return &nb.Bool
-}
-
-// TimePtr returns a pointer to a time.Time from sql.NullTime.
-func TimePtr(nt sql.NullTime) *time.Time {
-	if !nt.Valid {
-		return nil
-	}
-	return &nt.Time
-}
-
-// IsNotFound checks if the error is a not found error.
-func IsNotFound(err error) bool {
-	return errors.Is(err, ErrDBNotFound)
-}
-
-// IsDuplicateEntry checks if the error is a duplicate entry error.
-func IsDuplicateEntry(err error) bool {
-	return isPgError(err, uniqueViolation)
-}
-
-// IsForeignKeyViolation checks if the error is a foreign key violation error.
-func IsForeignKeyViolation(err error) bool {
-	return isPgError(err, foreignKeyViolation)
-}
-
-// IsUndefinedTable checks if the error is an undefined table error.
-func IsUndefinedTable(err error) bool {
-	return isPgError(err, undefinedTable)
-}
-
-// IsCheckViolation checks if the error is a check constraint violation error.
-func IsCheckViolation(err error) bool {
-	return isPgError(err, checkViolation)
-}
-
-// IsNotNullViolation checks if the error is a not null violation error.
-func IsNotNullViolation(err error) bool {
-	return isPgError(err, notNullViolation)
 }

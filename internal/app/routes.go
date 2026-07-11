@@ -3,8 +3,6 @@ package app
 
 import (
 	"log/slog"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,6 +10,7 @@ import (
 	"github.com/nourabuild/iam-service/internal/sdk/middleware"
 	"github.com/nourabuild/iam-service/internal/sdk/observability"
 	"github.com/nourabuild/iam-service/internal/services/sentry"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/time/rate"
 )
 
@@ -20,7 +19,7 @@ import (
 //
 // This is basic protection for development and early deployments. Long-term
 // enforcement belongs at the API gateway, applied consistently across all
-// services (see NOTES.md) — do not grow this into a distributed limiter.
+// services (see README.md) — do not grow this into a distributed limiter.
 var (
 	credRate     = rate.Every(12 * time.Second) // 5/min
 	credBurst    = 5
@@ -34,32 +33,40 @@ var (
 	adminBurst   = 30
 )
 
+const maxJSONBodyBytes int64 = 1 << 20 // 1 MB
+
 // ----------------------------------------------------------------------------
 // Route Registration
 // ----------------------------------------------------------------------------
 
-func (a *App) RegisterRoutes(sentryCfg config.Sentry) *gin.Engine {
+func (a *App) RegisterRoutes(cfg config.Config) *gin.Engine {
 	router := gin.New()
 	logger := slog.Default()
 
 	// Only honour X-Forwarded-For from proxies we control; otherwise a client
 	// can spoof its IP to dodge per-IP rate limits and pollute logs. An empty
 	// TRUSTED_PROXIES (the default) trusts no proxy at all.
-	if err := router.SetTrustedProxies(trustedProxies()); err != nil {
-		slog.Warn("set trusted proxies", "error", err)
+	if err := router.SetTrustedProxies(cfg.HTTP.TrustedProxies); err != nil {
+		slog.Error("set trusted proxies; forwarding headers disabled", "error", err)
+		_ = router.SetTrustedProxies(nil)
 	}
 
 	// Global middleware chain
 	router.Use(middleware.RequestID())      // Correlation IDs
 	router.Use(middleware.Recovery(logger)) // Panic recovery
-	if sentryCfg.DSN != "" {
-		router.Use(sentry.SentryMiddleware(sentryCfg))
+	if cfg.Sentry.DSN != "" {
+		router.Use(sentry.SentryMiddleware(cfg.Sentry))
 		router.Use(sentry.SentryRequestContext())
 	}
-	router.Use(middleware.Logger(logger))    // Custom slog logger
-	router.Use(observability.Metrics())      // HTTP request metrics
-	router.Use(middleware.SecurityHeaders()) // Conservative response headers
-	router.Use(middleware.CORS())            // CORS support
+	router.Use(observability.Tracing())                                           // Distributed request traces
+	router.Use(middleware.Logger(logger))                                         // Custom slog logger
+	router.Use(observability.Metrics())                                           // HTTP request metrics
+	router.Use(middleware.SecurityHeaders())                                      // Conservative response headers
+	router.Use(middleware.CORS(cfg.CORS.AllowOrigins, cfg.CORS.AllowCredentials)) // CORS support
+
+	// Deployments should restrict this operational endpoint at the ingress or
+	// service-network layer.
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// API v1 route group
 	v1 := router.Group("/api/v1")
@@ -75,18 +82,19 @@ func (a *App) RegisterRoutes(sentryCfg config.Sentry) *gin.Engine {
 		// instance so traffic on /login doesn't consume budget from /refresh.
 		auth := v1.Group("/auth")
 		{
-			auth.POST("/register", middleware.RateLimit(credRate, credBurst), a.HandleRegister)
-			auth.POST("/login", middleware.RateLimit(credRate, credBurst), a.HandleLogin)
-			auth.POST("/refresh", middleware.RateLimit(refreshRate, refreshBurst), a.HandleRefresh)
-			auth.POST("/password/forgot", middleware.RateLimit(pwResetRate, pwResetBurst), a.HandleForgotPassword)
-			auth.POST("/password/reset", middleware.RateLimit(pwResetRate, pwResetBurst), a.HandleResetPassword)
+			auth.POST("/register", middleware.RateLimit(credRate, credBurst), middleware.BodyLimit(maxRegisterBodyBytes), a.HandleRegister)
+			auth.POST("/login", middleware.RateLimit(credRate, credBurst), middleware.BodyLimit(maxJSONBodyBytes), a.HandleLogin)
+			auth.POST("/refresh", middleware.RateLimit(refreshRate, refreshBurst), middleware.BodyLimit(maxJSONBodyBytes), a.HandleRefresh)
+			auth.POST("/password/forgot", middleware.RateLimit(pwResetRate, pwResetBurst), middleware.BodyLimit(maxJSONBodyBytes), a.HandleForgotPassword)
+			auth.POST("/password/reset", middleware.RateLimit(pwResetRate, pwResetBurst), middleware.BodyLimit(maxJSONBodyBytes), a.HandleResetPassword)
 		}
 
 		// User routes (protected - requires authentication)
 		user := v1.Group("/user")
 		user.Use(middleware.RateLimit(userRate, userBurst))
+		user.Use(middleware.BodyLimit(maxJSONBodyBytes))
 		user.Use(middleware.Authenticate(a.jwt))
-		if sentryCfg.DSN != "" {
+		if cfg.Sentry.DSN != "" {
 			user.Use(sentry.SentryPrincipal())
 		}
 		{
@@ -98,8 +106,9 @@ func (a *App) RegisterRoutes(sentryCfg config.Sentry) *gin.Engine {
 		// Admin routes (protected - requires admin role)
 		admin := v1.Group("/admin")
 		admin.Use(middleware.RateLimit(adminRate, adminBurst))
+		admin.Use(middleware.BodyLimit(maxJSONBodyBytes))
 		admin.Use(middleware.Authenticate(a.jwt))
-		if sentryCfg.DSN != "" {
+		if cfg.Sentry.DSN != "" {
 			admin.Use(sentry.SentryPrincipal())
 		}
 		admin.Use(middleware.AuthorizeAdmin())
@@ -111,22 +120,4 @@ func (a *App) RegisterRoutes(sentryCfg config.Sentry) *gin.Engine {
 	}
 
 	return router
-}
-
-// trustedProxies parses TRUSTED_PROXIES, a comma-separated list of proxy IPs
-// or CIDRs whose forwarding headers may be believed.
-func trustedProxies() []string {
-	raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES"))
-	if raw == "" {
-		return nil
-	}
-
-	parts := strings.Split(raw, ",")
-	proxies := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if p := strings.TrimSpace(part); p != "" {
-			proxies = append(proxies, p)
-		}
-	}
-	return proxies
 }

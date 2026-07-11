@@ -9,9 +9,7 @@ import (
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
-// This was a unit test
-
-var livenessTest = []struct {
+var livenessTests = []struct {
 	host                   string
 	expectedHost           string
 	expectedStatusCode     int
@@ -32,43 +30,44 @@ var livenessTest = []struct {
 }
 
 func TestLiveness(t *testing.T) {
-	var uri = "/api/v1/health/liveness"
+	const uri = "/api/v1/health/liveness"
+	originalHostname := osHostname
+	t.Cleanup(func() { osHostname = originalHostname })
 
-	for _, tt := range livenessTest {
-		osHostname = func() (string, error) {
-			return tt.host, nil
-		}
+	for _, tt := range livenessTests {
+		t.Run(tt.expectedLivenessStatus, func(t *testing.T) {
+			osHostname = func() (string, error) {
+				return tt.host, nil
+			}
 
-		req, _ := http.NewRequest(http.MethodGet, uri, nil)
+			req := httptest.NewRequest(http.MethodGet, uri, nil)
+			rr := httptest.NewRecorder()
+			engine.ServeHTTP(rr, req)
 
-		rr := httptest.NewRecorder()
+			var actual models.Liveness
+			if err := json.Unmarshal(rr.Body.Bytes(), &actual); err != nil {
+				t.Fatalf("unmarshaling liveness response: %v", err)
+			}
 
-		engine.ServeHTTP(rr, req)
+			if actual.Host != tt.expectedHost {
+				t.Errorf("host = %q, want %q", actual.Host, tt.expectedHost)
+			}
 
-		var actual models.Liveness
-		json.Unmarshal(rr.Body.Bytes(), &actual)
+			if rr.Code != tt.expectedStatusCode {
+				t.Errorf("status = %d, want %d", rr.Code, tt.expectedStatusCode)
+			}
 
-		if actual.Host != tt.expectedHost {
-			t.Errorf("Expected host. expected %s, got %s", tt.expectedHost, actual.Host)
-		}
-
-		if rr.Code != tt.expectedStatusCode {
-			t.Errorf("Expected status code. expected %d, got %d", tt.expectedStatusCode, rr.Code)
-		}
-
-		if actual.Status != tt.expectedLivenessStatus {
-			t.Errorf("Expected liveness status. expected %s, got %s", tt.expectedLivenessStatus, actual.Status)
-		}
-
+			if actual.Status != tt.expectedLivenessStatus {
+				t.Errorf("liveness status = %q, want %q", actual.Status, tt.expectedLivenessStatus)
+			}
+		})
 	}
-
 }
 
 func TestReadiness(t *testing.T) {
 	uri := "/api/v1/health/readiness"
 
-	req, _ := http.NewRequest(http.MethodGet, uri, nil)
-
+	req := httptest.NewRequest(http.MethodGet, uri, nil)
 	rr := httptest.NewRecorder()
 
 	engine.ServeHTTP(rr, req)
@@ -89,9 +88,3 @@ func TestReadiness(t *testing.T) {
 		t.Errorf("expected kafka enabled, got %q", body["kafka"])
 	}
 }
-
-// Docker required
-// go test -coverprofile=coverage.out ./... && go tool cover -html=coverage.out -o coverage.html
-
-// Not required:
-// go test -coverprofile=coverage.out ./internal/app/... && go tool cover -html=coverage.out -o coverage.html

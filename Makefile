@@ -5,35 +5,22 @@ include .env
 export
 endif
 
-# ==============================================================================
-# Define dependencies
-GOLANG          := golang:1.26
-ALPINE          := alpine:3.22
-
-POSTGRES        := postgres:17.2
-SERVICE_APP    	:= iam-service
-BASE_IMAGE_NAME := insidious000
-VERSION         := 0.0.1
-API_IMAGE       := $(BASE_IMAGE_NAME)/$(SERVICE_APP):$(VERSION)
+.PHONY: run tidy deps-list deps-upgrade deps-cleancache verify-checksums list \
+	lint staticcheck migrate-create migrate-up migrate-down migrate-force \
+	migrate-version migrate-drop test test-race coverage kafka kafka-ui \
+	kafka-topics kafka-topics-list
 
 # ==============================================================================
 # Main
 
 run:
-	lsof -i :10067 | awk 'NR!=1 {print $$2}' | xargs -r kill -9
 	go run ./cmd/api/main.go
 
 # ==============================================================================
 # Modules support
 
-deps-reset:
-	git checkout -- go.mod
-	go mod tidy
-	go mod vendor
-
 tidy:
 	go mod tidy
-	go mod vendor
 
 deps-list:
 	go list -m -u -mod=readonly all
@@ -41,7 +28,6 @@ deps-list:
 deps-upgrade:
 	go get -u -v ./...
 	go mod tidy
-	go mod vendor
 
 deps-cleancache:
 	go clean -modcache
@@ -69,35 +55,39 @@ migrate-create:
 
 # Run migrations
 migrate-up:
-	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" up
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)" up
 
 migrate-down:
-	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" down
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)" down
 
 migrate-force:
 	@read -p "Enter version: " version; \
-	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" force $$version
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)" force $$version
 
 migrate-version:
-	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" version
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)" version
 
 migrate-drop:
-	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" drop -f
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)" drop -f
 
 
 # ==============================================================================
 
 # go version -m $(which staticcheck) | head -n 1 | awk '{print $NF}'
 
-revert:
-	git reset --hard HEAD~1
-
 test:
-	go test -coverprofile=coverage.out ./internal/app/... && go tool cover -html=coverage.out -o coverage.html
-	open coverage.html
+	go test ./...
+
+test-race:
+	go test -race ./...
+
+coverage:
+	go test -coverprofile=coverage.out ./internal/app/...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report written to coverage.html"
 
 
-# Kafka 4.0
+# Kafka
 kafka:
 	docker run -d --name kafka -p 9092:9092 apache/kafka:4.2.0
 
@@ -115,7 +105,3 @@ kafka-topics:
 
 kafka-topics-list:
 	docker exec kafka kafka-topics.sh --bootstrap-server localhost:9092 --list
-
-
-# docker ps
-# docker exec <container_name> createdb -U postgres noura_iam_service_db

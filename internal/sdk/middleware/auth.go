@@ -9,11 +9,6 @@ import (
 	"github.com/nourabuild/iam-service/internal/services/jwt"
 )
 
-const (
-	UserIDKey = "user_id"
-	RoleKey   = "role"
-)
-
 // Authenticate validates the Authorization header and attaches user context.
 func Authenticate(jwtService jwt.TokenRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -51,8 +46,6 @@ func Authenticate(jwtService jwt.TokenRepository) gin.HandlerFunc {
 		}
 
 		SetPrincipal(c, principal)
-		c.Set(UserIDKey, principal.ID)
-		c.Set(RoleKey, principal.Role)
 		c.Next()
 	}
 }

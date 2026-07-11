@@ -30,13 +30,12 @@ func newAuthEngine(svc jwt.TokenRepository) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.GET("/protected", Authenticate(svc), func(c *gin.Context) {
-		userID, err := GetUserID(c)
+		principal, err := Principal(c)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "no_user_in_context"})
 			return
 		}
-		role, _ := c.Get(RoleKey)
-		c.JSON(http.StatusOK, gin.H{"user_id": userID, "role": role})
+		c.JSON(http.StatusOK, gin.H{"user_id": principal.ID, "role": principal.Role})
 	})
 	return r
 }
@@ -157,7 +156,7 @@ func TestGetUserID(t *testing.T) {
 
 	t.Run("wrong type", func(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
-		c.Set(UserIDKey, 42)
+		c.Set(principalKey, 42)
 		if _, err := GetUserID(c); err == nil {
 			t.Fatal("expected error for non-string user_id, got nil")
 		}
