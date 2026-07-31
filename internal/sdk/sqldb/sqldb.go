@@ -673,8 +673,23 @@ func (s *service) ResetPassword(ctx context.Context, token string, newPassword [
 	if err := deleteRefreshTokensByUserID(ctx, tx, resetToken.UserID); err != nil {
 		return err
 	}
+	if err := deletePasswordResetTokensByUserID(ctx, tx, resetToken.UserID); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing password reset transaction: %w", err)
+	}
+	return nil
+}
+
+func deletePasswordResetTokensByUserID(ctx context.Context, q querier, userID string) error {
+	const query = `
+		DELETE FROM auth.password_reset_tokens
+		WHERE user_id = $1
+	`
+
+	if _, err := q.ExecContext(ctx, query, userID); err != nil {
+		return fmt.Errorf("deleting password reset tokens for user: %w", err)
 	}
 	return nil
 }

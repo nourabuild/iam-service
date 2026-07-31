@@ -240,7 +240,7 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	}
 
 	// Hash new password
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcryptCost)
+	hashedPassword, err := generateFromPassword([]byte(req.NewPassword), bcryptCost)
 	if err != nil {
 		a.report(c, "change_password", "bcrypt", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_hash_error", nil)

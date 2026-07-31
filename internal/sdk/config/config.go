@@ -16,7 +16,10 @@ import (
 )
 
 const (
-	minJWTSecretLength = 32
+	minJWTSecretLength          = 32
+	maxAccessTokenTTL           = time.Hour
+	maxRefreshTokenTTL          = 90 * 24 * time.Hour
+	jwtSecretExamplePlaceholder = "replace-with-openssl-rand-hex-32-output-min-32-bytes"
 
 	defaultEnv              = "development"
 	defaultHTTPPort         = "10067"
@@ -97,6 +100,7 @@ type Observability struct {
 
 func Load() (Config, error) {
 	var problems []error
+	appEnv := envOr("APP_ENV", defaultEnv)
 	accessTokenTTL, err := parseDuration(env("JWT_ACCESS_TOKEN_TTL"), defaultAccessTokenTTL)
 	if err != nil {
 		problems = append(problems, fmt.Errorf("JWT_ACCESS_TOKEN_TTL: %w", err))
@@ -119,7 +123,7 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Env: envOr("APP_ENV", defaultEnv),
+		Env: appEnv,
 		HTTP: HTTP{
 			Port:           firstNonEmpty(env("HTTP_PORT"), env("PORT"), defaultHTTPPort),
 			IdleTimeout:    time.Minute,
@@ -148,7 +152,7 @@ func Load() (Config, error) {
 		},
 		Sentry: Sentry{
 			DSN:                    env("SENTRY_DSN"),
-			Environment:            envOr("SENTRY_ENVIRONMENT", defaultEnv),
+			Environment:            envOr("SENTRY_ENVIRONMENT", appEnv),
 			Release:                env("SENTRY_RELEASE"),
 			SentryTracesSampleRate: tracesSampleRate,
 			SentryFlushTimeout:     sentryFlushTimeout,
@@ -177,7 +181,7 @@ func LoadDB() DB {
 		Password: env("BLUEPRINT_DB_PASSWORD"),
 		Database: env("BLUEPRINT_DB_DATABASE"),
 		Schema:   envOr("BLUEPRINT_DB_SCHEMA", defaultDBSchema),
-		SSLMode:  envOr("BLUEPRINT_DB_SSLMODE", defaultDBSSLMode),
+		SSLMode:  strings.ToLower(envOr("BLUEPRINT_DB_SSLMODE", defaultDBSSLMode)),
 	}
 }
 
@@ -203,6 +207,9 @@ func (c Config) validate() error {
 	if len(c.Auth.JWTSecret) < minJWTSecretLength {
 		problems = append(problems, fmt.Errorf("JWT_ACCESS_TOKEN_SECRET must be at least %d characters", minJWTSecretLength))
 	}
+	if c.Auth.JWTSecret == jwtSecretExamplePlaceholder {
+		problems = append(problems, fmt.Errorf("JWT_ACCESS_TOKEN_SECRET must not use the public example placeholder"))
+	}
 	if c.Auth.Issuer == "" {
 		problems = append(problems, fmt.Errorf("JWT_ISSUER is required"))
 	}
@@ -214,9 +221,21 @@ func (c Config) validate() error {
 	}
 	if c.Auth.AccessTokenTTL <= 0 {
 		problems = append(problems, fmt.Errorf("JWT_ACCESS_TOKEN_TTL must be positive"))
+	} else if c.Auth.AccessTokenTTL > maxAccessTokenTTL {
+		problems = append(problems, fmt.Errorf("JWT_ACCESS_TOKEN_TTL must not exceed %s", maxAccessTokenTTL))
 	}
 	if c.Auth.RefreshTokenTTL <= 0 {
 		problems = append(problems, fmt.Errorf("JWT_REFRESH_TOKEN_TTL must be positive"))
+	} else if c.Auth.RefreshTokenTTL > maxRefreshTokenTTL {
+		problems = append(problems, fmt.Errorf("JWT_REFRESH_TOKEN_TTL must not exceed %s", maxRefreshTokenTTL))
+	}
+	switch c.DB.SSLMode {
+	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
+	default:
+		problems = append(problems, fmt.Errorf("BLUEPRINT_DB_SSLMODE is invalid"))
+	}
+	if isProduction(c.Env) && c.DB.SSLMode != "verify-full" {
+		problems = append(problems, fmt.Errorf("BLUEPRINT_DB_SSLMODE must be verify-full in production"))
 	}
 	if math.IsNaN(c.Sentry.SentryTracesSampleRate) || c.Sentry.SentryTracesSampleRate < 0 || c.Sentry.SentryTracesSampleRate > 1 {
 		problems = append(problems, fmt.Errorf("SENTRY_TRACES_SAMPLE_RATE must be between 0 and 1"))
@@ -261,6 +280,10 @@ func (c Config) validate() error {
 		parsed, err := url.Parse(item.url)
 		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 			problems = append(problems, fmt.Errorf("%s must be an absolute HTTP(S) URL", item.key))
+			continue
+		}
+		if isProduction(c.Env) && parsed.Scheme != "https" {
+			problems = append(problems, fmt.Errorf("%s must use HTTPS in production", item.key))
 		}
 	}
 
@@ -357,4 +380,8 @@ func parseFloat(raw string, fallback float64) (float64, error) {
 func validPort(raw string) bool {
 	port, err := strconv.Atoi(raw)
 	return err == nil && port >= 1 && port <= 65535
+}
+
+func isProduction(env string) bool {
+	return strings.EqualFold(strings.TrimSpace(env), "production")
 }

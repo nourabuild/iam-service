@@ -537,12 +537,14 @@ func TestResetPasswordIsAtomicAndRevokesSessions(t *testing.T) {
 	ctx := context.Background()
 	user := createTestUser(t, srv, "atomic-reset-user", "atomic-reset@example.com")
 
-	if _, err := srv.CreatePasswordResetToken(ctx, models.NewPasswordResetToken{
-		UserID:    user.ID,
-		Token:     "atomic-reset-token",
-		ExpiresAt: time.Now().UTC().Add(time.Hour),
-	}); err != nil {
-		t.Fatalf("CreatePasswordResetToken returned error: %v", err)
+	for _, token := range []string{"atomic-reset-token", "older-reset-token"} {
+		if _, err := srv.CreatePasswordResetToken(ctx, models.NewPasswordResetToken{
+			UserID:    user.ID,
+			Token:     token,
+			ExpiresAt: time.Now().UTC().Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("CreatePasswordResetToken(%q) returned error: %v", token, err)
+		}
 	}
 	refreshPlaintext := []byte("reset-session-token")
 	if _, err := srv.CreateRefreshToken(ctx, models.NewRefreshToken{
@@ -568,6 +570,9 @@ func TestResetPasswordIsAtomicAndRevokesSessions(t *testing.T) {
 	}
 	if err := srv.ResetPassword(ctx, "atomic-reset-token", []byte("another-hash")); !errors.Is(err, ErrDBNotFound) {
 		t.Fatalf("reset token was reused; want ErrDBNotFound, got %v", err)
+	}
+	if err := srv.ResetPassword(ctx, "older-reset-token", []byte("another-hash")); !errors.Is(err, ErrDBNotFound) {
+		t.Fatalf("sibling reset token survived password reset; want ErrDBNotFound, got %v", err)
 	}
 }
 

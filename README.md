@@ -21,6 +21,12 @@ The service operates in a microservices environment and exposes authentication f
 cp .env.example .env
 ```
 
+Generate the signing secret rather than inventing or reusing one:
+
+```bash
+openssl rand -hex 32
+```
+
 2. Start PostgreSQL:
 
 ```bash
@@ -91,7 +97,21 @@ Migrations live in `internal/sdk/migrate/sql` and are also applied automatically
 
 ## CI
 
-GitHub Actions runs build, vet, staticcheck, and the full test suite on every push and pull request (`.github/workflows/ci.yml`).
+The prepared GitHub Actions workflow runs formatting, checksum verification,
+build, vet, the pinned Staticcheck tool, govulncheck, and the full race-enabled
+test suite. Automatic push and pull-request triggers are intentionally disabled
+for now; the workflow can be started manually and retained for later activation
+(`.github/workflows/ci.yml`).
+
+## Production safety
+
+- Set `APP_ENV=production`. Startup then requires PostgreSQL certificate and
+  hostname verification (`BLUEPRINT_DB_SSLMODE=verify-full`) and HTTPS for
+  Mailtrap and password-reset URLs.
+- Access-token lifetimes are capped at one hour and refresh-token lifetimes at
+  90 days. The defaults remain 15 minutes and 30 days.
+- Sentry events deliberately discard request bodies, cookies, sensitive
+  headers, and client network data because IAM requests carry credentials.
 
 ## Architecture contracts
 

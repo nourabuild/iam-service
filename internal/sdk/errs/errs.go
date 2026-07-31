@@ -4,6 +4,7 @@ package errs
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 )
 
@@ -43,9 +44,7 @@ func WithFields(err *Error, fields map[string]string) *Error {
 		return &clone
 	}
 	clone.Fields = make(map[string]string, len(fields))
-	for key, value := range fields {
-		clone.Fields[key] = value
-	}
+	maps.Copy(clone.Fields, fields)
 	return &clone
 }
 

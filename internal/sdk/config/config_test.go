@@ -45,7 +45,9 @@ func setValidEnvironment(t *testing.T) {
 
 func TestLoadUsesNormalizedTypedConfiguration(t *testing.T) {
 	setValidEnvironment(t)
+	t.Setenv("APP_ENV", "staging")
 	t.Setenv("BLUEPRINT_DB_PASSWORD", `'p@ss:word'`)
+	t.Setenv("BLUEPRINT_DB_SSLMODE", "VERIFY-FULL")
 	t.Setenv("TRUSTED_PROXIES", "10.0.0.0/8, 192.0.2.10")
 	t.Setenv("CORS_ALLOW_ORIGINS", "https://app.example.com, https://admin.example.com")
 	t.Setenv("CORS_ALLOW_CREDENTIALS", "true")
@@ -57,11 +59,17 @@ func TestLoadUsesNormalizedTypedConfiguration(t *testing.T) {
 	if cfg.DB.Password != "p@ss:word" {
 		t.Fatalf("DB password = %q, want normalized value", cfg.DB.Password)
 	}
+	if cfg.DB.SSLMode != "verify-full" {
+		t.Fatalf("DB SSL mode = %q, want normalized value", cfg.DB.SSLMode)
+	}
 	if len(cfg.HTTP.TrustedProxies) != 2 || cfg.HTTP.TrustedProxies[0] != "10.0.0.0/8" {
 		t.Fatalf("trusted proxies = %v", cfg.HTTP.TrustedProxies)
 	}
 	if len(cfg.CORS.AllowOrigins) != 2 || !cfg.CORS.AllowCredentials {
 		t.Fatalf("CORS config = %+v", cfg.CORS)
+	}
+	if cfg.Sentry.Environment != "staging" {
+		t.Fatalf("Sentry environment = %q, want APP_ENV fallback", cfg.Sentry.Environment)
 	}
 }
 
@@ -74,7 +82,10 @@ func TestLoadRejectsUnsafeRanges(t *testing.T) {
 	}{
 		{name: "HTTP port", key: "HTTP_PORT", value: "70000", wantErr: "HTTP_PORT"},
 		{name: "database port", key: "BLUEPRINT_DB_PORT", value: "zero", wantErr: "BLUEPRINT_DB_PORT"},
+		{name: "database SSL mode", key: "BLUEPRINT_DB_SSLMODE", value: "sometimes", wantErr: "BLUEPRINT_DB_SSLMODE"},
 		{name: "access TTL", key: "JWT_ACCESS_TOKEN_TTL", value: "-1m", wantErr: "JWT_ACCESS_TOKEN_TTL"},
+		{name: "access TTL too long", key: "JWT_ACCESS_TOKEN_TTL", value: "2h", wantErr: "JWT_ACCESS_TOKEN_TTL"},
+		{name: "refresh TTL too long", key: "JWT_REFRESH_TOKEN_TTL", value: "2161h", wantErr: "JWT_REFRESH_TOKEN_TTL"},
 		{name: "trace sample rate", key: "SENTRY_TRACES_SAMPLE_RATE", value: "1.5", wantErr: "SENTRY_TRACES_SAMPLE_RATE"},
 		{name: "NaN trace sample rate", key: "SENTRY_TRACES_SAMPLE_RATE", value: "NaN", wantErr: "SENTRY_TRACES_SAMPLE_RATE"},
 		{name: "malformed boolean", key: "CORS_ALLOW_CREDENTIALS", value: "sometimes", wantErr: "CORS_ALLOW_CREDENTIALS"},
@@ -88,6 +99,43 @@ func TestLoadRejectsUnsafeRanges(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			setValidEnvironment(t)
 			t.Setenv(tt.key, tt.value)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Load error = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsPublicJWTSecretPlaceholder(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("JWT_ACCESS_TOKEN_SECRET", jwtSecretExamplePlaceholder)
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "public example placeholder") {
+		t.Fatalf("Load error = %v, want public placeholder rejection", err)
+	}
+}
+
+func TestLoadRequiresSecureProductionTransports(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     string
+		value   string
+		wantErr string
+	}{
+		{name: "database TLS", key: "BLUEPRINT_DB_SSLMODE", value: "require", wantErr: "verify-full"},
+		{name: "mail API HTTPS", key: "MAILTRAP_API_URL", value: "http://mail.example.com/send", wantErr: "MAILTRAP_API_URL"},
+		{name: "reset URL HTTPS", key: "PASSWORD_RESET_URL", value: "http://app.example.com/reset", wantErr: "PASSWORD_RESET_URL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setValidEnvironment(t)
+			t.Setenv("APP_ENV", "production")
+			t.Setenv("BLUEPRINT_DB_SSLMODE", "verify-full")
+			t.Setenv(tt.key, tt.value)
+
 			_, err := Load()
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("Load error = %v, want error containing %q", err, tt.wantErr)

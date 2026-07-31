@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -39,6 +40,11 @@ func NewMailtrapService(cfg config.Mailtrap) *MailtrapService {
 		passwordResetURL: cfg.PasswordResetURL,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
+			// Never forward the bearer API token through a provider redirect.
+			// A redirect response is handled as a delivery failure below.
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 }
@@ -46,6 +52,10 @@ func NewMailtrapService(cfg config.Mailtrap) *MailtrapService {
 func (m *MailtrapService) SendPasswordResetEmail(ctx context.Context, to, token string) error {
 	to = strings.TrimSpace(to)
 	token = strings.TrimSpace(token)
+
+	if strings.TrimSpace(m.apiToken) == "" {
+		return fmt.Errorf("mailtrap API token is not configured")
+	}
 
 	address, err := mail.ParseAddress(to)
 	if err != nil {
@@ -119,6 +129,13 @@ func (m *MailtrapService) send(ctx context.Context, payload mailtrapTemplateRequ
 		return fmt.Errorf("send mailtrap request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Drain normal provider responses so the transport can safely reuse the
+	// underlying connection. Bound the read in case a broken endpoint returns
+	// an unexpectedly large body.
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10)); err != nil {
+		return fmt.Errorf("read mailtrap response: %w", err)
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Provider response bodies can echo recipient data. Keep PII out of

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	githubsentry "github.com/getsentry/sentry-go"
+	"github.com/nourabuild/iam-service/internal/sdk/config"
 )
 
 func TestScrubSentryRequestFiltersBearerParameters(t *testing.T) {
@@ -22,6 +23,64 @@ func TestScrubSentryRequestFiltersBearerParameters(t *testing.T) {
 	}
 	if query.Get("view") != "profile" {
 		t.Fatalf("non-sensitive query value changed: %s", got.Request.QueryString)
+	}
+}
+
+func TestSentryCallbacksRemoveCredentialData(t *testing.T) {
+	options := clientOptions(config.Sentry{
+		DSN:                    "https://public@example.com/1",
+		SentryTracesSampleRate: 1,
+	})
+
+	callbacks := map[string]func(*githubsentry.Event, *githubsentry.EventHint) *githubsentry.Event{
+		"error":       options.BeforeSend,
+		"transaction": options.BeforeSendTransaction,
+	}
+	for name, callback := range callbacks {
+		t.Run(name, func(t *testing.T) {
+			event := &githubsentry.Event{Request: &githubsentry.Request{
+				Data:    `{"password":"secret","refresh_token":"bearer"}`,
+				Cookies: "session=secret",
+				Headers: map[string]string{
+					"Authorization":       "Bearer secret",
+					"Cookie":              "session=secret",
+					"proxy-authorization": "Bearer proxy-secret",
+					"X-API-Key":           "api-secret",
+					"X-Forwarded-For":     "192.0.2.1",
+					"Content-Type":        "application/json",
+					"X-Request-ID":        "request-id",
+				},
+				Env: map[string]string{"REMOTE_ADDR": "192.0.2.1"},
+			}}
+
+			got := callback(event, nil)
+			if got.Request.Data != "" {
+				t.Fatalf("request body was retained: %q", got.Request.Data)
+			}
+			if got.Request.Cookies != "" {
+				t.Fatalf("cookies were retained: %q", got.Request.Cookies)
+			}
+			if got.Request.Env != nil {
+				t.Fatalf("request environment was retained: %#v", got.Request.Env)
+			}
+			for _, key := range []string{
+				"Authorization",
+				"Cookie",
+				"proxy-authorization",
+				"X-API-Key",
+				"X-Forwarded-For",
+			} {
+				if _, ok := got.Request.Headers[key]; ok {
+					t.Fatalf("sensitive header %q was retained", key)
+				}
+			}
+			if got.Request.Headers["Content-Type"] != "application/json" {
+				t.Fatal("non-sensitive header was removed")
+			}
+			if got.Request.Headers["X-Request-ID"] != "request-id" {
+				t.Fatal("request ID header was removed")
+			}
+		})
 	}
 }
 

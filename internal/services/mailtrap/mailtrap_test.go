@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/nourabuild/iam-service/internal/sdk/config"
@@ -58,6 +59,7 @@ func TestSendPasswordResetEmailHonorsCancellation(t *testing.T) {
 	defer server.Close()
 
 	client := NewMailtrapService(config.Mailtrap{
+		APIToken:         "api-token",
 		APIURL:           server.URL,
 		SenderEmail:      "noreply@example.com",
 		PasswordResetURL: "https://app.example.com/reset",
@@ -68,5 +70,34 @@ func TestSendPasswordResetEmailHonorsCancellation(t *testing.T) {
 	err := client.SendPasswordResetEmail(ctx, "user@example.com", "token")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestSendPasswordResetEmailDoesNotFollowRedirects(t *testing.T) {
+	var redirected atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirected.Store(true)
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	client := NewMailtrapService(config.Mailtrap{
+		APIToken:         "api-token",
+		APIURL:           source.URL,
+		TemplateUUID:     "template-id",
+		SenderEmail:      "noreply@example.com",
+		PasswordResetURL: "https://app.example.com/reset",
+	})
+
+	err := client.SendPasswordResetEmail(context.Background(), "user@example.com", "token")
+	if err == nil {
+		t.Fatal("expected redirect response to fail")
+	}
+	if redirected.Load() {
+		t.Fatal("mail client followed a redirect and could expose its bearer token")
 	}
 }

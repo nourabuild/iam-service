@@ -112,8 +112,8 @@ func TestHandleLogin(t *testing.T) {
 		}
 
 		// Validate failure branches / bad requests
-		var actual map[string]interface{}
-		var expected map[string]interface{}
+		var actual map[string]any
+		var expected map[string]any
 
 		err := json.Unmarshal(rr.Body.Bytes(), &actual)
 		assert.NoError(t, err)
@@ -348,8 +348,8 @@ func TestHandleRegister(t *testing.T) {
 			continue
 		}
 
-		var actual map[string]interface{}
-		var expected map[string]interface{}
+		var actual map[string]any
+		var expected map[string]any
 
 		err := json.Unmarshal(rr.Body.Bytes(), &actual)
 		assert.NoError(t, err)
@@ -398,8 +398,8 @@ var refreshTests = []struct {
 	},
 	{
 		body:               `{"refresh_token": "jwt_parse_refresh_error"}`,
-		expectedStatusCode: http.StatusUnauthorized,
-		expectedResponse:   `{"error": "unauthorized"}`,
+		expectedStatusCode: http.StatusServiceUnavailable,
+		expectedResponse:   `{"error": "service_unavailable"}`,
 	},
 	{
 		body:               `{"refresh_token": "missing_refresh_token"}`,
@@ -408,8 +408,13 @@ var refreshTests = []struct {
 	},
 	{
 		body:               `{"refresh_token": "db_get_refresh_token_error"}`,
-		expectedStatusCode: http.StatusUnauthorized,
-		expectedResponse:   `{"error": "unauthorized"}`,
+		expectedStatusCode: http.StatusServiceUnavailable,
+		expectedResponse:   `{"error": "service_unavailable"}`,
+	},
+	{
+		body:               `{"refresh_token": "db_get_refresh_user_error"}`,
+		expectedStatusCode: http.StatusServiceUnavailable,
+		expectedResponse:   `{"error": "service_unavailable"}`,
 	},
 	{
 		body:               `{"refresh_token": "revoked_refresh_token"}`,
@@ -462,8 +467,8 @@ func TestHandleRefresh(t *testing.T) {
 			continue
 		}
 
-		var actual map[string]interface{}
-		var expected map[string]interface{}
+		var actual map[string]any
+		var expected map[string]any
 
 		err := json.Unmarshal(rr.Body.Bytes(), &actual)
 		assert.NoError(t, err)

@@ -90,9 +90,9 @@ func resizeNearestNeighbor(src image.Image, dstW, dstH int) image.Image {
 
 	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
 
-	for y := 0; y < dstH; y++ {
+	for y := range dstH {
 		srcY := srcBounds.Min.Y + int(math.Floor(float64(y)*float64(srcH)/float64(dstH)))
-		for x := 0; x < dstW; x++ {
+		for x := range dstW {
 			srcX := srcBounds.Min.X + int(math.Floor(float64(x)*float64(srcW)/float64(dstW)))
 			dst.Set(x, y, src.At(srcX, srcY))
 		}

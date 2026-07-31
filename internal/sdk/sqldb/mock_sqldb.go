@@ -128,6 +128,8 @@ func (m *mockService) GetRefreshTokenByToken(ctx context.Context, token []byte) 
 	userID := "user-id"
 	if stringToken == "jwt_generate_access_error_token" {
 		userID = "jwt_generate_access_error_token"
+	} else if stringToken == "db_get_refresh_user_error" {
+		userID = "db_get_user_error"
 	}
 	refreshToken := models.RefreshToken{
 		ID:        "refresh-token-id",

@@ -33,6 +33,8 @@ const (
 )
 
 var generateFromPassword = bcrypt.GenerateFromPassword
+var generateResetToken = generateSecureToken
+var readRandomBytes = rand.Read
 
 // dummyPasswordHash equalizes the expensive bcrypt path for unknown users so
 // login response timing does not reveal whether an email is registered.
@@ -233,7 +235,7 @@ func (a *App) HandleRefresh(c *gin.Context) {
 			return
 		}
 		a.report(c, "refresh", "db", slog.LevelError, err)
-		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
+		writeError(c, http.StatusServiceUnavailable, "service_unavailable", nil)
 		return
 	}
 
@@ -263,7 +265,7 @@ func (a *App) HandleRefresh(c *gin.Context) {
 			return
 		}
 		a.report(c, "refresh", "db_user", slog.LevelError, err)
-		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
+		writeError(c, http.StatusServiceUnavailable, "service_unavailable", nil)
 		return
 	}
 
@@ -475,7 +477,7 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 		return
 	}
 
-	token, err := generateSecureToken(resetTokenLength)
+	token, err := generateResetToken(resetTokenLength)
 	if err != nil {
 		a.report(c, "forgot_password", "token_generation", slog.LevelError, err)
 		respondGeneric()
@@ -564,7 +566,7 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 // generateSecureToken generates a cryptographically secure random token
 func generateSecureToken(length int) (string, error) {
 	bytes := make([]byte, length)
-	if _, err := rand.Read(bytes); err != nil {
+	if _, err := readRandomBytes(bytes); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(bytes), nil

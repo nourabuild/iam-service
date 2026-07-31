@@ -13,6 +13,35 @@ import (
 	"github.com/nourabuild/iam-service/internal/sdk/middleware"
 )
 
+var requestHeaderFilter = newSentryDataCollection()
+
+func newSentryDataCollection() *githubsentry.DataCollection {
+	return &githubsentry.DataCollection{
+		UserInfo: githubsentry.Set(false),
+		Cookies: &githubsentry.KeyValueCollectionBehavior{
+			Mode: githubsentry.CollectionOff,
+		},
+		HTTPHeaders: &githubsentry.HeaderCollectionConfig{
+			Request: &githubsentry.KeyValueCollectionBehavior{
+				Mode: githubsentry.CollectionDenyList,
+				Terms: []string{
+					"cookie",
+					"forwarded",
+					"-ip",
+					"remote-",
+					"via",
+					"-user",
+				},
+			},
+		},
+		HTTPBodies: []githubsentry.BodyType{},
+		QueryParams: &githubsentry.KeyValueCollectionBehavior{
+			Mode:  githubsentry.CollectionDenyList,
+			Terms: []string{"code"},
+		},
+	}
+}
+
 func SetupSentry(ctx context.Context, cfg config.Sentry, logger *slog.Logger) (func(context.Context) error, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -22,20 +51,7 @@ func SetupSentry(ctx context.Context, cfg config.Sentry, logger *slog.Logger) (f
 		return func(context.Context) error { return nil }, nil
 	}
 
-	if err := githubsentry.Init(githubsentry.ClientOptions{
-		Dsn:              cfg.DSN,
-		Environment:      cfg.Environment,
-		Release:          cfg.Release,
-		AttachStacktrace: true,
-		EnableTracing:    cfg.SentryTracesSampleRate > 0,
-		TracesSampleRate: cfg.SentryTracesSampleRate,
-		BeforeSend: func(event *githubsentry.Event, hint *githubsentry.EventHint) *githubsentry.Event {
-			return scrubSentryRequest(event)
-		},
-		BeforeSendTransaction: func(event *githubsentry.Event, hint *githubsentry.EventHint) *githubsentry.Event {
-			return scrubSentryRequest(event)
-		},
-	}); err != nil {
+	if err := githubsentry.Init(clientOptions(cfg)); err != nil {
 		return nil, err
 	}
 
@@ -48,14 +64,47 @@ func SetupSentry(ctx context.Context, cfg config.Sentry, logger *slog.Logger) (f
 	}, nil
 }
 
+func clientOptions(cfg config.Sentry) githubsentry.ClientOptions {
+	return githubsentry.ClientOptions{
+		Dsn:              cfg.DSN,
+		Environment:      cfg.Environment,
+		Release:          cfg.Release,
+		AttachStacktrace: true,
+		DataCollection:   newSentryDataCollection(),
+		EnableTracing:    cfg.SentryTracesSampleRate > 0,
+		TracesSampleRate: cfg.SentryTracesSampleRate,
+		BeforeSend: func(event *githubsentry.Event, _ *githubsentry.EventHint) *githubsentry.Event {
+			return scrubSentryRequest(event)
+		},
+		BeforeSendTransaction: func(event *githubsentry.Event, _ *githubsentry.EventHint) *githubsentry.Event {
+			return scrubSentryRequest(event)
+		},
+	}
+}
+
 func scrubSentryRequest(event *githubsentry.Event) *githubsentry.Event {
-	if event == nil || event.Request == nil || event.Request.QueryString == "" {
+	if event == nil || event.Request == nil {
 		return event
 	}
-	query, err := url.ParseQuery(event.Request.QueryString)
+
+	request := event.Request
+
+	// IAM request bodies contain passwords and bearer/reset tokens. The Sentry
+	// HTTP integrations can buffer and attach small request bodies, so always
+	// remove them before both error and transaction events leave the process.
+	request.Data = ""
+	request.Cookies = ""
+	request.Env = nil
+	removeSensitiveHeaders(request.Headers)
+
+	if request.QueryString == "" {
+		return event
+	}
+
+	query, err := url.ParseQuery(request.QueryString)
 	if err != nil {
 		// A malformed query cannot be safely inspected for bearer values.
-		event.Request.QueryString = "[Filtered]"
+		request.QueryString = "[Filtered]"
 		return event
 	}
 	changed := false
@@ -66,9 +115,30 @@ func scrubSentryRequest(event *githubsentry.Event) *githubsentry.Event {
 		}
 	}
 	if changed {
-		event.Request.QueryString = query.Encode()
+		request.QueryString = query.Encode()
 	}
 	return event
+}
+
+func removeSensitiveHeaders(headers map[string]string) {
+	if len(headers) == 0 {
+		return
+	}
+
+	// sentry-go v0.48 replaced IsSensitiveHeader with DataCollection filters.
+	// Filter probe values so sensitive keys can still be removed rather than
+	// retained with redacted values.
+	const probeValue = "iam-service-header-probe"
+	probes := make(map[string]string, len(headers))
+	for key := range headers {
+		probes[key] = probeValue
+	}
+	filtered := requestHeaderFilter.FilterRequestHeaders(probes)
+	for key := range probes {
+		if filtered[key] != probeValue {
+			delete(headers, key)
+		}
+	}
 }
 
 func CaptureException(ctx context.Context, err error, level githubsentry.Level, tags map[string]string) {
