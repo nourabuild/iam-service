@@ -35,17 +35,20 @@ const (
 	defaultResetURL         = "https://meets.noura.software/reset-password"
 )
 
+// Config contains the service's validated runtime configuration.
 type Config struct {
 	Env           string
 	HTTP          HTTP
 	DB            DB
-	Auth          AuthConfig
+	Auth          Auth
 	CORS          CORS
+	Kafka         Kafka
 	Mailtrap      Mailtrap
 	Sentry        Sentry
 	Observability Observability
 }
 
+// HTTP configures the public HTTP server and trusted proxies.
 type HTTP struct {
 	Port           string
 	IdleTimeout    time.Duration
@@ -54,6 +57,7 @@ type HTTP struct {
 	TrustedProxies []string
 }
 
+// DB configures the PostgreSQL connection.
 type DB struct {
 	Host     string
 	Port     string
@@ -64,18 +68,29 @@ type DB struct {
 	SSLMode  string
 }
 
-type AuthConfig struct {
+// Auth configures token signing and expiration.
+type Auth struct {
 	JWTSecret       string
 	Issuer          string
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
 }
 
+// CORS configures cross-origin browser access.
 type CORS struct {
 	AllowOrigins     []string
 	AllowCredentials bool
 }
 
+// Kafka configures lifecycle-event publishing. An empty Brokers slice disables
+// publishing; all other fields are required when brokers are configured.
+type Kafka struct {
+	Brokers    []string
+	Partitions int32
+	Replicas   int16
+}
+
+// Mailtrap configures transactional password-reset email delivery.
 type Mailtrap struct {
 	APIToken         string
 	APIURL           string
@@ -85,19 +100,22 @@ type Mailtrap struct {
 	PasswordResetURL string
 }
 
+// Sentry configures error reporting and tracing through Sentry.
 type Sentry struct {
-	DSN                    string
-	Environment            string
-	Release                string
-	SentryTracesSampleRate float64
-	SentryFlushTimeout     time.Duration
+	DSN              string
+	Environment      string
+	Release          string
+	TracesSampleRate float64
+	FlushTimeout     time.Duration
 }
 
+// Observability configures OpenTelemetry export.
 type Observability struct {
 	ServiceName      string
 	OTLPHTTPEndpoint string
 }
 
+// Load reads, normalizes, and validates configuration from the environment.
 func Load() (Config, error) {
 	var problems []error
 	appEnv := envOr("APP_ENV", defaultEnv)
@@ -121,6 +139,23 @@ func Load() (Config, error) {
 	if err != nil {
 		problems = append(problems, fmt.Errorf("SENTRY_FLUSH_TIMEOUT: %w", err))
 	}
+	kafkaBrokers := splitList(env("KAFKA_BROKERS"))
+	var kafkaPartitions int32
+	var kafkaReplicas int16
+	if len(kafkaBrokers) > 0 {
+		partitions, err := parsePositiveInt(env("KAFKA_TOPIC_PARTITIONS"), 32)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("KAFKA_TOPIC_PARTITIONS: %w", err))
+		} else {
+			kafkaPartitions = int32(partitions)
+		}
+		replicas, err := parsePositiveInt(env("KAFKA_TOPIC_REPLICAS"), 16)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("KAFKA_TOPIC_REPLICAS: %w", err))
+		} else {
+			kafkaReplicas = int16(replicas)
+		}
+	}
 
 	cfg := Config{
 		Env: appEnv,
@@ -131,8 +166,8 @@ func Load() (Config, error) {
 			WriteTimeout:   10 * time.Second,
 			TrustedProxies: splitList(env("TRUSTED_PROXIES")),
 		},
-		DB: LoadDB(),
-		Auth: AuthConfig{
+		DB: loadDB(),
+		Auth: Auth{
 			JWTSecret:       env("JWT_ACCESS_TOKEN_SECRET"),
 			Issuer:          envOr("JWT_ISSUER", defaultJWTIssuer),
 			AccessTokenTTL:  accessTokenTTL,
@@ -141,6 +176,11 @@ func Load() (Config, error) {
 		CORS: CORS{
 			AllowOrigins:     splitList(env("CORS_ALLOW_ORIGINS")),
 			AllowCredentials: allowCredentials,
+		},
+		Kafka: Kafka{
+			Brokers:    kafkaBrokers,
+			Partitions: kafkaPartitions,
+			Replicas:   kafkaReplicas,
 		},
 		Mailtrap: Mailtrap{
 			APIToken:         env("MAILTRAP_API_TOKEN"),
@@ -151,11 +191,11 @@ func Load() (Config, error) {
 			PasswordResetURL: envOr("PASSWORD_RESET_URL", defaultResetURL),
 		},
 		Sentry: Sentry{
-			DSN:                    env("SENTRY_DSN"),
-			Environment:            envOr("SENTRY_ENVIRONMENT", appEnv),
-			Release:                env("SENTRY_RELEASE"),
-			SentryTracesSampleRate: tracesSampleRate,
-			SentryFlushTimeout:     sentryFlushTimeout,
+			DSN:              env("SENTRY_DSN"),
+			Environment:      envOr("SENTRY_ENVIRONMENT", appEnv),
+			Release:          env("SENTRY_RELEASE"),
+			TracesSampleRate: tracesSampleRate,
+			FlushTimeout:     sentryFlushTimeout,
 		},
 		Observability: Observability{
 			ServiceName:      envOr("OBSERVABILITY_SERVICE_NAME", "iam-service-api"),
@@ -173,7 +213,7 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-func LoadDB() DB {
+func loadDB() DB {
 	return DB{
 		Host:     env("BLUEPRINT_DB_HOST"),
 		Port:     env("BLUEPRINT_DB_PORT"),
@@ -237,10 +277,10 @@ func (c Config) validate() error {
 	if isProduction(c.Env) && c.DB.SSLMode != "verify-full" {
 		problems = append(problems, fmt.Errorf("BLUEPRINT_DB_SSLMODE must be verify-full in production"))
 	}
-	if math.IsNaN(c.Sentry.SentryTracesSampleRate) || c.Sentry.SentryTracesSampleRate < 0 || c.Sentry.SentryTracesSampleRate > 1 {
+	if math.IsNaN(c.Sentry.TracesSampleRate) || c.Sentry.TracesSampleRate < 0 || c.Sentry.TracesSampleRate > 1 {
 		problems = append(problems, fmt.Errorf("SENTRY_TRACES_SAMPLE_RATE must be between 0 and 1"))
 	}
-	if c.Sentry.SentryFlushTimeout <= 0 {
+	if c.Sentry.FlushTimeout <= 0 {
 		problems = append(problems, fmt.Errorf("SENTRY_FLUSH_TIMEOUT must be positive"))
 	}
 	for _, proxy := range c.HTTP.TrustedProxies {
@@ -373,6 +413,20 @@ func parseFloat(raw string, fallback float64) (float64, error) {
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
 		return fallback, fmt.Errorf("invalid number %q: %w", raw, err)
+	}
+	return value, nil
+}
+
+func parsePositiveInt(raw string, bitSize int) (int64, error) {
+	if raw == "" {
+		return 0, errors.New("value is required")
+	}
+	value, err := strconv.ParseInt(raw, 10, bitSize)
+	if err != nil {
+		return 0, fmt.Errorf("invalid positive integer %q: %w", raw, err)
+	}
+	if value <= 0 {
+		return 0, fmt.Errorf("value must be positive, got %d", value)
 	}
 	return value, nil
 }

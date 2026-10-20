@@ -12,7 +12,7 @@ import (
 
 // OutboxEventFunc builds the outbox message announcing a user mutation, from
 // the row the mutation returned. A nil func (or nil return) means no event.
-type OutboxEventFunc func(models.User) *models.OutboxMessage
+type OutboxEventFunc = func(models.User) *models.OutboxMessage
 
 // querier is the subset of *sql.DB / *sql.Tx the mutation closures need, so
 // the same query code runs standalone or inside an outbox transaction.
@@ -25,7 +25,7 @@ type querier interface {
 // the event it builds to auth.outbox in the same transaction. Either both the
 // mutation and its event commit, or neither does — the relay then guarantees
 // at-least-once delivery to Kafka.
-func (s *service) mutateWithOutbox(ctx context.Context, eventFn OutboxEventFunc, mutate func(querier) (models.User, error)) (models.User, error) {
+func (s *Store) mutateWithOutbox(ctx context.Context, eventFn OutboxEventFunc, mutate func(querier) (models.User, error)) (models.User, error) {
 	if eventFn == nil {
 		return mutate(s.db)
 	}
@@ -80,7 +80,7 @@ func insertOutbox(ctx context.Context, q querier, msg models.OutboxMessage) erro
 }
 
 // FetchUnpublishedOutbox returns up to limit pending events in commit order.
-func (s *service) FetchUnpublishedOutbox(ctx context.Context, limit int) ([]models.OutboxRow, error) {
+func (s *Store) FetchUnpublishedOutbox(ctx context.Context, limit int) ([]models.OutboxRow, error) {
 	const query = `
 		SELECT id, topic, key, payload, headers, created_at
 		FROM auth.outbox
@@ -93,7 +93,7 @@ func (s *service) FetchUnpublishedOutbox(ctx context.Context, limit int) ([]mode
 	if err != nil {
 		return nil, fmt.Errorf("fetching outbox: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []models.OutboxRow
 	for rows.Next() {
@@ -117,7 +117,7 @@ func (s *service) FetchUnpublishedOutbox(ctx context.Context, limit int) ([]mode
 }
 
 // MarkOutboxPublished stamps the given events as delivered.
-func (s *service) MarkOutboxPublished(ctx context.Context, ids []int64) error {
+func (s *Store) MarkOutboxPublished(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -137,7 +137,7 @@ func (s *service) MarkOutboxPublished(ctx context.Context, ids []int64) error {
 
 // DeletePublishedOutbox removes delivered events older than the retention
 // window, bounding table growth.
-func (s *service) DeletePublishedOutbox(ctx context.Context, olderThan time.Duration) error {
+func (s *Store) DeletePublishedOutbox(ctx context.Context, olderThan time.Duration) error {
 	const query = `
 		DELETE FROM auth.outbox
 		WHERE published_at IS NOT NULL

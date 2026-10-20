@@ -26,6 +26,9 @@ func setValidEnvironment(t *testing.T) {
 		"JWT_REFRESH_TOKEN_TTL":      "",
 		"CORS_ALLOW_ORIGINS":         "",
 		"CORS_ALLOW_CREDENTIALS":     "",
+		"KAFKA_BROKERS":              "",
+		"KAFKA_TOPIC_PARTITIONS":     "",
+		"KAFKA_TOPIC_REPLICAS":       "",
 		"MAILTRAP_API_TOKEN":         "",
 		"MAILTRAP_API_URL":           "",
 		"MAILTRAP_TEMPLATE_UUID":     "",
@@ -70,6 +73,31 @@ func TestLoadUsesNormalizedTypedConfiguration(t *testing.T) {
 	}
 	if cfg.Sentry.Environment != "staging" {
 		t.Fatalf("Sentry environment = %q, want APP_ENV fallback", cfg.Sentry.Environment)
+	}
+}
+
+func TestLoadParsesKafkaConfiguration(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("KAFKA_BROKERS", "broker-a:9092, broker-b:9092")
+	t.Setenv("KAFKA_TOPIC_PARTITIONS", "3")
+	t.Setenv("KAFKA_TOPIC_REPLICAS", "2")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(cfg.Kafka.Brokers) != 2 || cfg.Kafka.Partitions != 3 || cfg.Kafka.Replicas != 2 {
+		t.Fatalf("Kafka config = %+v", cfg.Kafka)
+	}
+}
+
+func TestLoadRejectsIncompleteKafkaConfiguration(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv("KAFKA_BROKERS", "broker:9092")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "KAFKA_TOPIC_PARTITIONS") || !strings.Contains(err.Error(), "KAFKA_TOPIC_REPLICAS") {
+		t.Fatalf("Load error = %v, want missing Kafka sizing errors", err)
 	}
 }
 

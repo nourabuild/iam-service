@@ -2,6 +2,7 @@ package middleware
 
 import "github.com/gin-gonic/gin"
 
+// SecurityHeaders adds conservative browser security and cache headers.
 func SecurityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")

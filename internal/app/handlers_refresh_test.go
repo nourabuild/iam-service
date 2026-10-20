@@ -11,13 +11,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
 )
 
 type refreshHandlerDBStub struct {
-	sqldb.Service
+	store
+
 	getRefreshTokenByTokenFn    func(context.Context, []byte) (models.RefreshToken, error)
 	deleteRefreshTokensByUserID func(context.Context, string) error
 	getUserByIDFn               func(context.Context, string) (models.User, error)
@@ -48,7 +50,8 @@ func (s *refreshHandlerDBStub) RotateRefreshToken(
 }
 
 type refreshIssuerStub struct {
-	jwt.TokenRepository
+	tokenService
+
 	issuePairFn func(models.User, time.Time) (jwt.TokenPair, error)
 }
 
@@ -56,9 +59,9 @@ func (s *refreshIssuerStub) IssuePair(user models.User, now time.Time) (jwt.Toke
 	return s.issuePairFn(user, now)
 }
 
-func refreshHandlerRouter(a *App) *gin.Engine {
+func refreshHandlerRouter(a *Server) *gin.Engine {
 	router := gin.New()
-	router.POST("/refresh", a.HandleRefresh)
+	router.POST("/refresh", a.handleRefresh)
 	return router
 }
 
@@ -89,14 +92,14 @@ func TestHandleRefreshFailureBranches(t *testing.T) {
 		},
 		{
 			name:          "refresh token references missing user",
-			getUserErr:    sqldb.ErrDBNotFound,
+			getUserErr:    sqldb.ErrNotFound,
 			wantStatus:    http.StatusUnauthorized,
 			wantError:     "invalid_token",
 			wantUserReads: 1,
 		},
 		{
 			name:          "concurrent rotation consumed token first",
-			rotateErr:     sqldb.ErrDBNotFound,
+			rotateErr:     sqldb.ErrNotFound,
 			wantStatus:    http.StatusUnauthorized,
 			wantError:     "invalid_token",
 			wantUserReads: 1,
@@ -199,7 +202,7 @@ func TestHandleRefreshFailureBranches(t *testing.T) {
 					return pair, nil
 				},
 			}
-			a := NewApp(db, issuer, nil, nil)
+			a := New(db, issuer, nil, nil)
 
 			request := httptest.NewRequest(
 				http.MethodPost,

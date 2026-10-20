@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// AuthorizeAdmin rejects requests whose principal is not an administrator.
 func AuthorizeAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		principal, err := Principal(c)

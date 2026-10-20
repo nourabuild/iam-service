@@ -39,7 +39,9 @@ func TestTracingRecordsRouteAndErrorStatus(t *testing.T) {
 	t.Cleanup(func() {
 		otel.SetTracerProvider(previousProvider)
 		otel.SetTextMapPropagator(previousPropagator)
-		_ = provider.Shutdown(context.Background())
+		if err := provider.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutting down tracer provider: %v", err)
+		}
 	})
 
 	router := gin.New()
@@ -48,7 +50,7 @@ func TestTracingRecordsRouteAndErrorStatus(t *testing.T) {
 		c.Status(http.StatusInternalServerError)
 	})
 	request := httptest.NewRequest(http.MethodGet, "/users/123", nil)
-	request.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	request.Header.Set("Traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 

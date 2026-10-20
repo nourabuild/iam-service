@@ -4,6 +4,7 @@ package minio
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -14,17 +15,22 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-
-	_ "image/gif"
 )
 
+// AvatarSize identifies a generated avatar variant.
 type AvatarSize string
 
 const (
-	AvatarSmall  AvatarSize = "small"
+	// AvatarSmall is the 64-pixel avatar variant.
+	AvatarSmall AvatarSize = "small"
+	// AvatarMedium is the 128-pixel avatar variant.
 	AvatarMedium AvatarSize = "medium"
-	AvatarLarge  AvatarSize = "large"
+	// AvatarLarge is the 256-pixel avatar variant.
+	AvatarLarge AvatarSize = "large"
 )
+
+// ErrNotFound indicates that an object does not exist.
+var ErrNotFound = errors.New("object not found")
 
 var avatarDimensions = map[AvatarSize]int{
 	AvatarSmall:  64,
@@ -32,8 +38,12 @@ var avatarDimensions = map[AvatarSize]int{
 	AvatarLarge:  256,
 }
 
-// AspectRatioValidationHelper validates that the image is roughly square (1:1 aspect ratio).
-func AspectRatioValidationHelper(img image.Image) error {
+// ValidateSquare reports whether img has a roughly 1:1 aspect ratio.
+func ValidateSquare(img image.Image) error {
+	if img == nil {
+		return errors.New("image is required")
+	}
+
 	bounds := img.Bounds()
 	w := bounds.Dx()
 	h := bounds.Dy()
@@ -50,11 +60,11 @@ func AspectRatioValidationHelper(img image.Image) error {
 	return nil
 }
 
-// ResizeAvatar resizes an image to all avatar sizes using nearest-neighbor scaling.
-// format must be "png" or "jpeg".
+// ResizeAvatar resizes img to every supported avatar size using nearest-neighbor
+// scaling. Format is case-insensitive and may be "png", "jpeg", or "jpg".
 func ResizeAvatar(img image.Image, format string) (map[AvatarSize][]byte, error) {
 	if img == nil || img.Bounds().Dx() <= 0 || img.Bounds().Dy() <= 0 {
-		return nil, fmt.Errorf("avatar image must have non-zero dimensions")
+		return nil, errors.New("avatar image must have non-zero dimensions")
 	}
 	format = strings.ToLower(strings.TrimSpace(format))
 	results := make(map[AvatarSize][]byte, len(avatarDimensions))
@@ -73,7 +83,7 @@ func ResizeAvatar(img image.Image, format string) (map[AvatarSize][]byte, error)
 				return nil, fmt.Errorf("encode jpeg for %s: %w", size, err)
 			}
 		default:
-			return nil, fmt.Errorf("unsupported format: %s", format)
+			return nil, fmt.Errorf("unsupported avatar format %q", format)
 		}
 
 		results[size] = buf.Bytes()
@@ -101,6 +111,7 @@ func resizeNearestNeighbor(src image.Image, dstW, dstH int) image.Image {
 	return dst
 }
 
+// Config contains connection settings for an S3-compatible object store.
 type Config struct {
 	Endpoint        string
 	AccessKeyID     string
@@ -109,16 +120,19 @@ type Config struct {
 	Region          string
 }
 
-type MinioService struct {
+// Client stores and retrieves objects from MinIO.
+type Client struct {
 	client *minio.Client
 }
 
-type NewMinioServiceOptions struct {
+// Options configures a Client.
+type Options struct {
 	Config    Config
 	PathStyle bool
 }
 
-func NewMinioService(opts NewMinioServiceOptions) (*MinioService, error) {
+// New creates a MinIO client.
+func New(opts Options) (*Client, error) {
 	bucketLookup := minio.BucketLookupAuto
 	if opts.PathStyle {
 		bucketLookup = minio.BucketLookupPath
@@ -131,26 +145,32 @@ func NewMinioService(opts NewMinioServiceOptions) (*MinioService, error) {
 		BucketLookup: bucketLookup,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create MinIO client: %w", err)
 	}
 
-	return &MinioService{client: client}, nil
+	return &Client{client: client}, nil
 }
 
 // Put uploads a blob to the bucket under key with the given contentType.
-func (s *MinioService) Put(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) error {
-	_, err := s.client.PutObject(ctx, bucket, key, reader, size, minio.PutObjectOptions{
+func (c *Client) Put(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) error {
+	_, err := c.client.PutObject(ctx, bucket, key, reader, size, minio.PutObjectOptions{
 		ContentType: contentType,
 	})
-	return err
+	if err != nil {
+		return fmt.Errorf("put object %q in bucket %q: %w", key, bucket, err)
+	}
+	return nil
 }
 
 // Get retrieves a blob from the bucket under key.
-// If there is nothing there, returns nil and no error.
-func (s *MinioService) Get(ctx context.Context, bucket, key string) (io.ReadCloser, error) {
-	obj, err := s.client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+// It returns an error matching ErrNotFound when the object does not exist.
+func (c *Client) Get(ctx context.Context, bucket, key string) (io.ReadCloser, error) {
+	obj, err := c.client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
-		return nil, err
+		if minio.ToErrorResponse(err).Code == minio.NoSuchKey {
+			return nil, fmt.Errorf("get object %q from bucket %q: %w", key, bucket, ErrNotFound)
+		}
+		return nil, fmt.Errorf("get object %q from bucket %q: %w", key, bucket, err)
 	}
 
 	// Check if the object actually exists by reading its stat.
@@ -158,9 +178,9 @@ func (s *MinioService) Get(ctx context.Context, bucket, key string) (io.ReadClos
 	if err != nil {
 		_ = obj.Close()
 		if minio.ToErrorResponse(err).Code == minio.NoSuchKey {
-			return nil, nil
+			return nil, fmt.Errorf("stat object %q in bucket %q: %w", key, bucket, ErrNotFound)
 		}
-		return nil, err
+		return nil, fmt.Errorf("stat object %q in bucket %q: %w", key, bucket, err)
 	}
 
 	return obj, nil
@@ -168,6 +188,9 @@ func (s *MinioService) Get(ctx context.Context, bucket, key string) (io.ReadClos
 
 // Delete removes a blob from the bucket under key.
 // Deleting where nothing exists does nothing and returns no error.
-func (s *MinioService) Delete(ctx context.Context, bucket, key string) error {
-	return s.client.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{})
+func (c *Client) Delete(ctx context.Context, bucket, key string) error {
+	if err := c.client.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{}); err != nil {
+		return fmt.Errorf("delete object %q from bucket %q: %w", key, bucket, err)
+	}
+	return nil
 }

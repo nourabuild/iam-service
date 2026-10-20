@@ -1,3 +1,4 @@
+// Package main starts the IAM API server.
 package main
 
 import (
@@ -12,7 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/joho/godotenv/autoload"
+	"github.com/joho/godotenv"
+
 	"github.com/nourabuild/iam-service/internal/app"
 	"github.com/nourabuild/iam-service/internal/sdk/config"
 	"github.com/nourabuild/iam-service/internal/sdk/observability"
@@ -49,6 +51,10 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load .env: %w", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -57,12 +63,12 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	shutdownSentry, err := sentry.SetupSentry(ctx, cfg.Sentry, logger)
+	shutdownSentry, err := sentry.Setup(ctx, cfg.Sentry, logger)
 	if err != nil {
 		return fmt.Errorf("setup sentry: %w", err)
 	}
 	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Sentry.SentryFlushTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Sentry.FlushTimeout)
 		defer cancel()
 		if err := shutdownSentry(shutdownCtx); err != nil {
 			logger.Error("shutdown sentry", "error", err)
@@ -83,41 +89,42 @@ func run(logger *slog.Logger) error {
 
 	var wg sync.WaitGroup
 
-	// Initialize Database service
-	sqlService, err := sqldb.New(cfg.DB)
+	db, err := sqldb.New(ctx, cfg.DB)
 	if err != nil {
 		return fmt.Errorf("init database: %w", err)
 	}
 	defer func() {
-		if err := sqlService.Close(); err != nil {
+		if err := db.Close(); err != nil {
 			logger.Error("close database", "error", err)
 		}
 	}()
 
-	// Initialize JWT service
-	jwtService := jwt.NewTokenService(cfg.Auth)
+	jwtService := jwt.New(cfg.Auth)
+	emailService := mailtrap.New(cfg.Mailtrap)
 
-	// Initialize Mailtrap service
-	emailService := mailtrap.NewMailtrapService(cfg.Mailtrap)
-
-	// Initialize Kafka producer
-	kafkaService := kafka.NewKafkaService(ctx)
-	if kafkaService != nil {
-		defer kafkaService.Close()
+	var eventProducer app.EventProducer
+	if len(cfg.Kafka.Brokers) == 0 {
+		logger.InfoContext(ctx, "kafka disabled", "reason", "KAFKA_BROKERS is not configured")
+	} else {
+		kafkaProducer, err := kafka.New(ctx, cfg.Kafka)
+		if err != nil {
+			return fmt.Errorf("init kafka: %w", err)
+		}
+		defer kafkaProducer.Close()
+		eventProducer = kafkaProducer
 	}
 
-	// App Initialization
-	iamApp := app.NewApp(
-		sqlService,
+	iamApp := app.New(
+		db,
 		jwtService,
 		emailService,
-		kafkaService,
+		eventProducer,
 	)
 
 	// HTTP server with configured timeouts
 	srv := &http.Server{
 		Addr:         ":" + cfg.HTTP.Port,
-		Handler:      iamApp.RegisterRoutes(cfg),
+		Handler:      iamApp.Handler(cfg),
 		IdleTimeout:  cfg.HTTP.IdleTimeout,
 		ReadTimeout:  cfg.HTTP.ReadTimeout,
 		WriteTimeout: cfg.HTTP.WriteTimeout,
@@ -142,13 +149,13 @@ func run(logger *slog.Logger) error {
 		cleanup := func() {
 			cctx, cancel := context.WithTimeout(ctx, time.Minute)
 			defer cancel()
-			if err := sqlService.DeleteExpiredRefreshTokens(cctx); err != nil {
+			if err := db.DeleteExpiredRefreshTokens(cctx); err != nil {
 				logger.Error("cleanup expired refresh tokens", "error", err)
 			}
-			if err := sqlService.DeleteExpiredPasswordResetTokens(cctx); err != nil {
+			if err := db.DeleteExpiredPasswordResetTokens(cctx); err != nil {
 				logger.Error("cleanup expired password reset tokens", "error", err)
 			}
-			if err := sqlService.DeletePublishedOutbox(cctx, outboxRetention); err != nil {
+			if err := db.DeletePublishedOutbox(cctx, outboxRetention); err != nil {
 				logger.Error("cleanup published outbox events", "error", err)
 			}
 		}

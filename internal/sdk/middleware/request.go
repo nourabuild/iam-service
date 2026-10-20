@@ -12,6 +12,7 @@ import (
 
 const maxRequestIDLength = 128
 
+// RequestID validates or creates a request ID and adds it to the response.
 func RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := strings.TrimSpace(c.GetHeader("X-Request-ID"))

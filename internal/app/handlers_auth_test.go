@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -73,16 +72,18 @@ var loginTests = []struct {
 }
 
 func TestHandleLogin(t *testing.T) {
-	var uri = "/api/v1/auth/login"
+	const uri = "/api/v1/auth/login"
 
 	for _, tt := range loginTests {
-
 		body := []byte(tt.body)
-		req, _ := http.NewRequest(http.MethodPost, uri, bytes.NewBuffer(body))
+		req, err := http.NewRequest(http.MethodPost, uri, bytes.NewBuffer(body))
+		if err != nil {
+			t.Fatalf("creating login request: %v", err)
+		}
 		req.Header.Set("Content-Type", "application/json")
 
 		if tt.requestID != "" {
-			req.Header.Set("X-Request-ID", tt.requestID)
+			req.Header.Set("X-Request-Id", tt.requestID)
 		}
 
 		rr := httptest.NewRecorder()
@@ -90,17 +91,21 @@ func TestHandleLogin(t *testing.T) {
 		engine.ServeHTTP(rr, req)
 
 		if tt.expectedStatusCode != rr.Code {
-			log.Println(body)
-			log.Printf("error msg: %v", rr.Body.String())
+			t.Logf("request body: %s", body)
+			t.Logf("error response: %s", rr.Body.String())
 			t.Errorf("received wrong status code. expected: %v, actual: %v", tt.expectedStatusCode, rr.Code)
 		}
 
 		if tt.expectedStatusCode == http.StatusOK {
-			var actual TokenResponse
-			json.Unmarshal(rr.Body.Bytes(), &actual)
+			var actual tokenResponse
+			if err := json.Unmarshal(rr.Body.Bytes(), &actual); err != nil {
+				t.Fatalf("unmarshaling login response: %v", err)
+			}
 
-			var expected TokenResponse
-			json.Unmarshal([]byte(tt.expectedResponse), &expected)
+			var expected tokenResponse
+			if err := json.Unmarshal([]byte(tt.expectedResponse), &expected); err != nil {
+				t.Fatalf("unmarshaling expected login response: %v", err)
+			}
 
 			if expected.AccessToken != actual.AccessToken {
 				t.Errorf("received wrong accessToken. expected: %v, actual: %v", expected.AccessToken, actual.AccessToken)
@@ -115,7 +120,7 @@ func TestHandleLogin(t *testing.T) {
 		var actual map[string]any
 		var expected map[string]any
 
-		err := json.Unmarshal(rr.Body.Bytes(), &actual)
+		err = json.Unmarshal(rr.Body.Bytes(), &actual)
 		assert.NoError(t, err)
 
 		err = json.Unmarshal([]byte(tt.expectedResponse), &expected)
@@ -304,7 +309,7 @@ var registerTests = []struct {
 }
 
 func TestHandleRegister(t *testing.T) {
-	var uri = "/api/v1/auth/register"
+	const uri = "/api/v1/auth/register"
 	originalGenerateFromPassword := generateFromPassword
 	defer func() {
 		generateFromPassword = originalGenerateFromPassword
@@ -313,13 +318,16 @@ func TestHandleRegister(t *testing.T) {
 	for _, tt := range registerTests {
 		generateFromPassword = originalGenerateFromPassword
 		if tt.forceHashError {
-			generateFromPassword = func(password []byte, cost int) ([]byte, error) {
+			generateFromPassword = func(_ []byte, _ int) ([]byte, error) {
 				return nil, errors.New("hash error")
 			}
 		}
 
 		body := []byte(tt.body)
-		req, _ := http.NewRequest(http.MethodPost, uri, bytes.NewBuffer(body))
+		req, err := http.NewRequest(http.MethodPost, uri, bytes.NewBuffer(body))
+		if err != nil {
+			t.Fatalf("creating registration request: %v", err)
+		}
 		req.Header.Set("Content-Type", tt.contentType)
 
 		rr := httptest.NewRecorder()
@@ -327,17 +335,21 @@ func TestHandleRegister(t *testing.T) {
 		engine.ServeHTTP(rr, req)
 
 		if tt.expectedStatusCode != rr.Code {
-			log.Println(body)
-			log.Printf("error msg: %v", rr.Body.String())
+			t.Logf("request body: %s", body)
+			t.Logf("error response: %s", rr.Body.String())
 			t.Errorf("received wrong status code. expected: %v, actual: %v", tt.expectedStatusCode, rr.Code)
 		}
 
 		if tt.expectedStatusCode == http.StatusCreated {
-			var actual TokenResponse
-			json.Unmarshal(rr.Body.Bytes(), &actual)
+			var actual tokenResponse
+			if err := json.Unmarshal(rr.Body.Bytes(), &actual); err != nil {
+				t.Fatalf("unmarshaling registration response: %v", err)
+			}
 
-			var expected TokenResponse
-			json.Unmarshal([]byte(tt.expectedResponse), &expected)
+			var expected tokenResponse
+			if err := json.Unmarshal([]byte(tt.expectedResponse), &expected); err != nil {
+				t.Fatalf("unmarshaling expected registration response: %v", err)
+			}
 
 			if expected.AccessToken != actual.AccessToken {
 				t.Errorf("received wrong accessToken. expected: %v, actual: %v", expected.AccessToken, actual.AccessToken)
@@ -351,7 +363,7 @@ func TestHandleRegister(t *testing.T) {
 		var actual map[string]any
 		var expected map[string]any
 
-		err := json.Unmarshal(rr.Body.Bytes(), &actual)
+		err = json.Unmarshal(rr.Body.Bytes(), &actual)
 		assert.NoError(t, err)
 
 		err = json.Unmarshal([]byte(tt.expectedResponse), &expected)
@@ -434,11 +446,14 @@ var refreshTests = []struct {
 }
 
 func TestHandleRefresh(t *testing.T) {
-	var uri = "/api/v1/auth/refresh"
+	const uri = "/api/v1/auth/refresh"
 
 	for _, tt := range refreshTests {
 		body := []byte(tt.body)
-		req, _ := http.NewRequest(http.MethodPost, uri, bytes.NewBuffer(body))
+		req, err := http.NewRequest(http.MethodPost, uri, bytes.NewBuffer(body))
+		if err != nil {
+			t.Fatalf("creating refresh request: %v", err)
+		}
 		req.Header.Set("Content-Type", "application/json")
 
 		rr := httptest.NewRecorder()
@@ -446,17 +461,21 @@ func TestHandleRefresh(t *testing.T) {
 		engine.ServeHTTP(rr, req)
 
 		if tt.expectedStatusCode != rr.Code {
-			log.Println(body)
-			log.Printf("error msg: %v", rr.Body.String())
+			t.Logf("request body: %s", body)
+			t.Logf("error response: %s", rr.Body.String())
 			t.Errorf("received wrong status code. expected: %v, actual: %v", tt.expectedStatusCode, rr.Code)
 		}
 
 		if tt.expectedStatusCode == http.StatusOK {
-			var actual TokenResponse
-			json.Unmarshal(rr.Body.Bytes(), &actual)
+			var actual tokenResponse
+			if err := json.Unmarshal(rr.Body.Bytes(), &actual); err != nil {
+				t.Fatalf("unmarshaling refresh response: %v", err)
+			}
 
-			var expected TokenResponse
-			json.Unmarshal([]byte(tt.expectedResponse), &expected)
+			var expected tokenResponse
+			if err := json.Unmarshal([]byte(tt.expectedResponse), &expected); err != nil {
+				t.Fatalf("unmarshaling expected refresh response: %v", err)
+			}
 
 			if expected.AccessToken != actual.AccessToken {
 				t.Errorf("received wrong accessToken. expected: %v, actual: %v", expected.AccessToken, actual.AccessToken)
@@ -470,7 +489,7 @@ func TestHandleRefresh(t *testing.T) {
 		var actual map[string]any
 		var expected map[string]any
 
-		err := json.Unmarshal(rr.Body.Bytes(), &actual)
+		err = json.Unmarshal(rr.Body.Bytes(), &actual)
 		assert.NoError(t, err)
 
 		err = json.Unmarshal([]byte(tt.expectedResponse), &expected)

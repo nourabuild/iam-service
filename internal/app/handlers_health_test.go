@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/nourabuild/iam-service/internal/sdk/models"
-	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 )
 
 var livenessTests = []struct {
@@ -75,20 +77,21 @@ func TestLiveness(t *testing.T) {
 }
 
 type unhealthyDB struct {
-	sqldb.Service
+	store
 }
 
-func (unhealthyDB) Health() map[string]string {
-	return map[string]string{
-		"status":  "down",
-		"message": "database unavailable",
-	}
+func (unhealthyDB) Ping(context.Context) error {
+	return errors.New("database unavailable")
+}
+
+func (unhealthyDB) Stats() sql.DBStats {
+	return sql.DBStats{}
 }
 
 func TestReadinessUnavailableDependencies(t *testing.T) {
-	app := NewApp(unhealthyDB{}, nil, nil, nil)
+	app := New(unhealthyDB{}, nil, nil, nil)
 	router := gin.New()
-	router.GET("/readiness", app.HandleReadiness)
+	router.GET("/readiness", app.handleReadiness)
 
 	request := httptest.NewRequest(http.MethodGet, "/readiness", nil)
 	response := httptest.NewRecorder()

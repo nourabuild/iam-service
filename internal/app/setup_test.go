@@ -1,19 +1,17 @@
 package app
 
 import (
+	"net/http"
 	"os"
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/nourabuild/iam-service/internal/sdk/config"
-	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
-	"github.com/nourabuild/iam-service/internal/services/jwt"
-	"github.com/nourabuild/iam-service/internal/services/kafka"
-	"github.com/nourabuild/iam-service/internal/services/mailtrap"
 	"golang.org/x/time/rate"
+
+	"github.com/nourabuild/iam-service/internal/sdk/config"
 )
 
-var engine *gin.Engine
+var engine http.Handler
 
 func TestMain(m *testing.M) {
 	gin.SetMode(gin.TestMode)
@@ -25,20 +23,19 @@ func TestMain(m *testing.M) {
 	userRate = rate.Inf
 	adminRate = rate.Inf
 
-	mockDB := sqldb.NewMockService()
-	mockJWT := jwt.NewMockTokenService()
-	mockMailtrap := mailtrap.NewMockMailtrapService()
+	mockDB := newMockStore()
+	mockJWT := newMockTokenService()
+	mockMailtrap := newMockPasswordResetMailer()
+	mockKafka := newMockEventProducer()
 
-	mockKafka := kafka.NewMockProducer()
-
-	app := NewApp(
+	app := New(
 		mockDB,
 		mockJWT,
 		mockMailtrap,
 		mockKafka,
 	)
 
-	engine = app.RegisterRoutes(config.Config{})
+	engine = app.Handler(config.Config{})
 
 	code := m.Run()
 	os.Exit(code)

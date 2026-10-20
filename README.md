@@ -56,28 +56,49 @@ this endpoint to your monitoring network in deployed environments.
 
 ## Development
 
-Run all tests. Database integration tests use testcontainers when Docker is
-available and are skipped locally otherwise (CI requires Docker):
+Install the same golangci-lint version used by CI:
+
+```bash
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+```
+
+Run the complete local verification gate. It checks module tidiness and
+checksums, gofmt/goimports formatting, the build, static analysis, and unit
+tests:
+
+```bash
+make verify
+```
+
+Project Go commands default to `-mod=readonly`, so an ignored local `vendor/`
+directory cannot change dependency resolution. The dependency-maintenance
+targets opt into module writes explicitly.
+
+Run the unit tests, or the PostgreSQL integration suite (which requires
+Docker and is selected explicitly with the `integration` build tag):
 
 ```bash
 make test
+make test-db
 ```
 
-Run the same suite under the race detector, or generate a handler coverage
-report:
+Run the same suite under the race detector, apply formatting, or generate a
+handler coverage report:
 
 ```bash
 make test-race
+make fmt
 make coverage
 ```
 
-Lint (vet + staticcheck):
+Run the configured idiomatic-Go linters independently:
 
 ```bash
 make lint
 ```
 
-Local Kafka for event publishing (optional — without it the service runs in degraded mode and publishes nothing):
+Local Kafka for event publishing is optional. Leave `KAFKA_BROKERS` empty to
+disable it; once brokers are configured, they must be reachable at startup:
 
 ```bash
 make kafka
@@ -97,11 +118,10 @@ Migrations live in `internal/sdk/migrate/sql` and are also applied automatically
 
 ## CI
 
-The prepared GitHub Actions workflow runs formatting, checksum verification,
-build, vet, the pinned Staticcheck tool, govulncheck, and the full race-enabled
-test suite. Automatic push and pull-request triggers are intentionally disabled
-for now; the workflow can be started manually and retained for later activation
-(`.github/workflows/ci.yml`).
+GitHub Actions runs on pushes to `main`, pull requests, and manual dispatches.
+It uses the same `make verify` gate with race detection enabled, runs database
+tests separately through testcontainers, and scans dependencies with
+govulncheck.
 
 ## Production safety
 

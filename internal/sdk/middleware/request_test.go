@@ -32,11 +32,11 @@ func TestRequestIDValidatesInboundValue(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			req.Header.Set("X-Request-ID", tt.requestID)
+			req.Header.Set("X-Request-Id", tt.requestID)
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, req)
 
-			got := response.Header().Get("X-Request-ID")
+			got := response.Header().Get("X-Request-Id")
 			if got == "" || got != response.Body.String() {
 				t.Fatalf("response request ID = %q, body = %q", got, response.Body.String())
 			}

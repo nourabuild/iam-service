@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Logger records one structured log entry for each request.
 func Logger(logger *slog.Logger) gin.HandlerFunc {
 	if logger == nil {
 		logger = slog.Default()

@@ -7,14 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nourabuild/iam-service/internal/sdk/models"
-	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
-	"github.com/nourabuild/iam-service/internal/services/kafka"
 )
 
 type relayFetchResult struct {
@@ -23,7 +22,7 @@ type relayFetchResult struct {
 }
 
 type relayDBFake struct {
-	sqldb.Service
+	store
 
 	fetchResults  []relayFetchResult
 	fetchCalls    int
@@ -59,7 +58,7 @@ type relayProducedRecord struct {
 	topic   string
 	key     []byte
 	value   any
-	headers []kafka.RecordHeader
+	headers map[string]string
 }
 
 type relayProducerFake struct {
@@ -77,15 +76,8 @@ func (f *relayProducerFake) Produce(
 	topic string,
 	key []byte,
 	value any,
-	headers ...kafka.RecordHeader,
+	headers map[string]string,
 ) error {
-	copiedHeaders := make([]kafka.RecordHeader, len(headers))
-	for i, header := range headers {
-		copiedHeaders[i] = kafka.RecordHeader{
-			Key:   header.Key,
-			Value: append([]byte(nil), header.Value...),
-		}
-	}
 	if raw, ok := value.(json.RawMessage); ok {
 		value = append(json.RawMessage(nil), raw...)
 	}
@@ -95,7 +87,7 @@ func (f *relayProducerFake) Produce(
 		topic:   topic,
 		key:     append([]byte(nil), key...),
 		value:   value,
-		headers: copiedHeaders,
+		headers: maps.Clone(headers),
 	})
 	if len(f.records)-1 == f.failAt {
 		return f.produceErr
@@ -108,7 +100,7 @@ func (*relayProducerFake) Close() {}
 func TestRunOutboxRelay(t *testing.T) {
 	t.Run("does not start without Kafka", func(t *testing.T) {
 		logs := captureDefaultLogs(t)
-		app := &App{}
+		app := &Server{}
 
 		// A zero interval would panic if the ticker were created.
 		app.RunOutboxRelay(context.Background(), 0)
@@ -120,7 +112,7 @@ func TestRunOutboxRelay(t *testing.T) {
 
 	t.Run("returns when context is already canceled", func(t *testing.T) {
 		db := &relayDBFake{}
-		app := &App{db: db, kafka: newRelayProducerFake()}
+		app := &Server{db: db, producer: newRelayProducerFake()}
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
@@ -140,7 +132,7 @@ func TestRunOutboxRelayProcessesTick(t *testing.T) {
 			cancel()
 		},
 	}
-	app := &App{db: db, kafka: newRelayProducerFake()}
+	app := &Server{db: db, producer: newRelayProducerFake()}
 	ticks := make(chan time.Time, 1)
 	ticks <- time.Now()
 
@@ -159,7 +151,7 @@ func TestDrainOutboxContinuesOnlyAfterFullBatch(t *testing.T) {
 		{rows: second},
 	}}
 	producer := newRelayProducerFake()
-	app := &App{db: db, kafka: producer}
+	app := &Server{db: db, producer: producer}
 
 	app.drainOutbox(context.Background())
 
@@ -193,7 +185,7 @@ func TestDrainOutboxErrorReporting(t *testing.T) {
 		logs := captureDefaultLogs(t)
 		fetchErr := errors.New("fetch unavailable")
 		db := &relayDBFake{fetchResults: []relayFetchResult{{err: fetchErr}}}
-		app := &App{db: db, kafka: newRelayProducerFake()}
+		app := &Server{db: db, producer: newRelayProducerFake()}
 
 		app.drainOutbox(context.Background())
 
@@ -210,7 +202,7 @@ func TestDrainOutboxErrorReporting(t *testing.T) {
 	t.Run("does not report shutdown cancellation", func(t *testing.T) {
 		logs := captureDefaultLogs(t)
 		db := &relayDBFake{fetchResults: []relayFetchResult{{err: context.Canceled}}}
-		app := &App{db: db, kafka: newRelayProducerFake()}
+		app := &Server{db: db, producer: newRelayProducerFake()}
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
@@ -230,7 +222,7 @@ func TestRelayBatchFetchResults(t *testing.T) {
 		fetchErr := errors.New("fetch failed")
 		db := &relayDBFake{fetchResults: []relayFetchResult{{err: fetchErr}}}
 		producer := newRelayProducerFake()
-		app := &App{db: db, kafka: producer}
+		app := &Server{db: db, producer: producer}
 
 		full, err := app.relayBatch(context.Background())
 
@@ -254,7 +246,7 @@ func TestRelayBatchFetchResults(t *testing.T) {
 	t.Run("returns drained for empty result", func(t *testing.T) {
 		db := &relayDBFake{fetchResults: []relayFetchResult{{}}}
 		producer := newRelayProducerFake()
-		app := &App{db: db, kafka: producer}
+		app := &Server{db: db, producer: producer}
 
 		full, err := app.relayBatch(context.Background())
 
@@ -294,7 +286,7 @@ func TestRelayBatchPublishesInOrderAndMarks(t *testing.T) {
 	}
 	db := &relayDBFake{fetchResults: []relayFetchResult{{rows: rows}}}
 	producer := newRelayProducerFake()
-	app := &App{db: db, kafka: producer}
+	app := &Server{db: db, producer: producer}
 	ctx := context.Background()
 
 	full, err := app.relayBatch(ctx)
@@ -326,7 +318,7 @@ func TestRelayBatchPublishesInOrderAndMarks(t *testing.T) {
 		if !bytes.Equal(raw, row.Payload) {
 			t.Errorf("record %d payload = %q, want byte-for-byte %q", i, raw, row.Payload)
 		}
-		if got := recordHeaders(record.headers); !reflect.DeepEqual(got, row.Headers) {
+		if got := record.headers; !reflect.DeepEqual(got, row.Headers) {
 			t.Errorf("record %d headers = %v, want %v", i, got, row.Headers)
 		}
 	}
@@ -340,7 +332,7 @@ func TestRelayBatchReportsFullBatch(t *testing.T) {
 	rows := makeOutboxRows(outboxBatchSize, 1)
 	db := &relayDBFake{fetchResults: []relayFetchResult{{rows: rows}}}
 	producer := newRelayProducerFake()
-	app := &App{db: db, kafka: producer}
+	app := &Server{db: db, producer: producer}
 
 	full, err := app.relayBatch(context.Background())
 
@@ -373,7 +365,7 @@ func TestRelayBatchStopsAtFirstProduceError(t *testing.T) {
 		producer := newRelayProducerFake()
 		producer.failAt = 0
 		producer.produceErr = produceErr
-		app := &App{db: db, kafka: producer}
+		app := &Server{db: db, producer: producer}
 
 		full, err := app.relayBatch(context.Background())
 
@@ -396,7 +388,7 @@ func TestRelayBatchStopsAtFirstProduceError(t *testing.T) {
 		producer := newRelayProducerFake()
 		producer.failAt = 1
 		producer.produceErr = produceErr
-		app := &App{db: db, kafka: producer}
+		app := &Server{db: db, producer: producer}
 
 		full, err := app.relayBatch(context.Background())
 
@@ -428,7 +420,7 @@ func TestRelayBatchReturnsMarkError(t *testing.T) {
 		markErr:      markErr,
 	}
 	producer := newRelayProducerFake()
-	app := &App{db: db, kafka: producer}
+	app := &Server{db: db, producer: producer}
 
 	full, err := app.relayBatch(context.Background())
 
@@ -467,7 +459,7 @@ func makeOutboxRows(count int, firstID int64) []models.OutboxRow {
 			ID:      id,
 			Topic:   "iam.user.updated",
 			Key:     fmt.Sprintf("user-%d", id),
-			Payload: []byte(fmt.Sprintf(`{"user_id":"user-%d"}`, id)),
+			Payload: fmt.Appendf(nil, `{"user_id":"user-%d"}`, id),
 			Headers: map[string]string{"correlation_id": fmt.Sprintf("request-%d", id)},
 		}
 	}
@@ -480,17 +472,6 @@ func outboxIDs(rows []models.OutboxRow) []int64 {
 		ids[i] = row.ID
 	}
 	return ids
-}
-
-func recordHeaders(headers []kafka.RecordHeader) map[string]string {
-	if len(headers) == 0 {
-		return nil
-	}
-	result := make(map[string]string, len(headers))
-	for _, header := range headers {
-		result[header.Key] = string(header.Value)
-	}
-	return result
 }
 
 func assertInt64sEqual(t *testing.T, got, want []int64) {

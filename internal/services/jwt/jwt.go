@@ -5,38 +5,36 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
-
+	"fmt"
 	"time"
-
-	"github.com/nourabuild/iam-service/internal/sdk/errs"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+
 	"github.com/nourabuild/iam-service/internal/sdk/config"
+	"github.com/nourabuild/iam-service/internal/sdk/errs"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
 const accessTokenType = "access"
 
-type TokenRepository interface {
-	IssuePair(user models.User, now time.Time) (TokenPair, error)
-	ParseAccessToken(token string) (models.Principal, error)
-}
-
-type TokenService struct {
+// Service issues and validates IAM bearer tokens.
+type Service struct {
 	secret          []byte
 	issuer          string
 	accessTokenTTL  time.Duration
 	refreshTokenTTL time.Duration
 }
 
-type Claims struct {
+type claims struct {
+	jwt.RegisteredClaims
+
 	IsAdmin   bool   `json:"is_admin"`
 	Role      string `json:"role"`
 	TokenType string `json:"typ"`
-	jwt.RegisteredClaims
 }
 
+// TokenPair contains a newly issued access token and refresh token.
 type TokenPair struct {
 	AccessToken           string
 	AccessTokenExpiresAt  time.Time
@@ -44,8 +42,9 @@ type TokenPair struct {
 	RefreshTokenExpiresAt time.Time
 }
 
-func NewTokenService(cfg config.AuthConfig) *TokenService {
-	return &TokenService{
+// New constructs a token Service from cfg.
+func New(cfg config.Auth) *Service {
+	return &Service{
 		secret:          []byte(cfg.JWTSecret),
 		issuer:          cfg.Issuer,
 		accessTokenTTL:  cfg.AccessTokenTTL,
@@ -53,57 +52,59 @@ func NewTokenService(cfg config.AuthConfig) *TokenService {
 	}
 }
 
-func (m *TokenService) IssuePair(user models.User, now time.Time) (TokenPair, error) {
-	accessToken, accessExpiresAt, err := m.IssueAccessToken(user, now)
+// IssuePair creates a signed access token and a random refresh token.
+func (s *Service) IssuePair(user models.User, now time.Time) (TokenPair, error) {
+	accessToken, accessExpiresAt, err := s.issueAccessToken(user, now)
 	if err != nil {
-		return TokenPair{}, err
+		return TokenPair{}, fmt.Errorf("issue access token: %w", err)
 	}
 
-	refreshToken, err := NewRefreshToken()
+	refreshToken, err := newRefreshToken()
 	if err != nil {
-		return TokenPair{}, err
+		return TokenPair{}, fmt.Errorf("issue refresh token: %w", err)
 	}
 
 	return TokenPair{
 		AccessToken:           accessToken,
 		AccessTokenExpiresAt:  accessExpiresAt,
 		RefreshToken:          refreshToken,
-		RefreshTokenExpiresAt: now.Add(m.refreshTokenTTL),
+		RefreshTokenExpiresAt: now.Add(s.refreshTokenTTL),
 	}, nil
 }
 
-func (m *TokenService) IssueAccessToken(user models.User, now time.Time) (string, time.Time, error) {
-	accessExpiresAt := now.Add(m.accessTokenTTL)
-	claims := Claims{
-		IsAdmin:   user.IsAdmin,
-		Role:      roleForUser(user),
-		TokenType: accessTokenType,
+func (s *Service) issueAccessToken(user models.User, now time.Time) (string, time.Time, error) {
+	accessExpiresAt := now.Add(s.accessTokenTTL)
+	claims := claims{
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    m.issuer,
+			Issuer:    s.issuer,
 			Subject:   user.ID,
 			ExpiresAt: jwt.NewNumericDate(accessExpiresAt),
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now),
 			ID:        uuid.NewString(),
 		},
+		IsAdmin:   user.IsAdmin,
+		Role:      roleForUser(user),
+		TokenType: accessTokenType,
 	}
 
-	accessToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(m.secret)
+	accessToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.secret)
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, fmt.Errorf("sign access token: %w", err)
 	}
 
 	return accessToken, accessExpiresAt, nil
 }
 
-func (m *TokenService) ParseAccessToken(tokenString string) (models.Principal, error) {
-	claims := new(Claims)
+// ParseAccessToken validates tokenString and returns its authenticated principal.
+func (s *Service) ParseAccessToken(tokenString string) (models.Principal, error) {
+	claims := new(claims)
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (any, error) {
 		if token.Method != jwt.SigningMethodHS256 {
 			return nil, errors.New("unexpected signing method")
 		}
-		return m.secret, nil
-	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithIssuer(m.issuer), jwt.WithExpirationRequired())
+		return s.secret, nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithIssuer(s.issuer), jwt.WithExpirationRequired())
 	if err != nil || !token.Valid {
 		if err == nil {
 			err = errors.New("token is invalid")
@@ -129,7 +130,7 @@ func roleForUser(user models.User) string {
 	return string(models.RoleUser)
 }
 
-func roleForClaims(claims *Claims) models.Role {
+func roleForClaims(claims *claims) models.Role {
 	if role := models.Role(claims.Role); role.Valid() {
 		return role
 	}
@@ -139,10 +140,10 @@ func roleForClaims(claims *Claims) models.Role {
 	return models.RoleUser
 }
 
-func NewRefreshToken() (string, error) {
+func newRefreshToken() (string, error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
+		return "", fmt.Errorf("read random bytes: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }

@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/nourabuild/iam-service/internal/sdk/middleware"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
-	"github.com/nourabuild/iam-service/internal/services/kafka"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // userUpdatedOutbox builds the outbox event announcing a user's new state,
@@ -20,7 +20,7 @@ import (
 func userUpdatedOutbox(requestID string) sqldb.OutboxEventFunc {
 	return func(user models.User) *models.OutboxMessage {
 		return &models.OutboxMessage{
-			Topic: kafka.ProduceTopicUserUpdated,
+			Topic: models.TopicUserUpdated,
 			Key:   user.ID,
 			Payload: models.UserUpdatedEvent{
 				EventType:     "UserUpdated",
@@ -42,9 +42,9 @@ func userUpdatedOutbox(requestID string) sqldb.OutboxEventFunc {
 	}
 }
 
-func (a *App) HandleUpdateAccount(c *gin.Context) {
+func (a *Server) handleUpdateAccount(c *gin.Context) {
 	ctx := c.Request.Context()
-	userID, err := middleware.GetUserID(c)
+	userID, err := middleware.UserID(c)
 	if err != nil {
 		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
@@ -52,7 +52,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 
 	var req models.UpdateUser
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
+		writeRequestError(c, err)
 		return
 	}
 
@@ -66,7 +66,7 @@ func (a *App) HandleUpdateAccount(c *gin.Context) {
 
 	user, err := a.db.UpdateUser(ctx, userID, req, userUpdatedOutbox(requestID(c)))
 	if err != nil {
-		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
+		if errors.Is(err, sqldb.ErrDuplicate) {
 			writeError(c, http.StatusConflict, "account_already_taken", nil)
 			return
 		}
@@ -94,9 +94,9 @@ func validateUpdateAccountInput(req models.UpdateUser) map[string]string {
 	return validationErrors
 }
 
-func (a *App) HandleMe(c *gin.Context) {
+func (a *Server) handleMe(c *gin.Context) {
 	ctx := c.Request.Context()
-	userID, err := middleware.GetUserID(c)
+	userID, err := middleware.UserID(c)
 	if err != nil {
 		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
@@ -104,11 +104,11 @@ func (a *App) HandleMe(c *gin.Context) {
 
 	user, err := a.db.GetUserByID(ctx, userID)
 	if err != nil {
-		a.report(c, "whoami", "db", slog.LevelError, err)
-		if errors.Is(err, sqldb.ErrDBNotFound) {
+		if errors.Is(err, sqldb.ErrNotFound) {
 			writeError(c, http.StatusUnauthorized, "user_not_found", nil)
 			return
 		}
+		a.report(c, "whoami", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_verify_user_error", nil)
 		return
 	}
@@ -116,7 +116,7 @@ func (a *App) HandleMe(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-func (a *App) HandleListUsers(c *gin.Context) {
+func (a *Server) handleListUsers(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	users, err := a.db.ListUsers(ctx)
@@ -129,7 +129,7 @@ func (a *App) HandleListUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, users)
 }
 
-func (a *App) HandleGrantAdminRole(c *gin.Context) {
+func (a *Server) handleGrantAdminRole(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	userID := c.Param("user_id")
@@ -140,12 +140,12 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 
 	user, err := a.db.PromoteUserToAdmin(ctx, userID, userUpdatedOutbox(requestID(c)))
 	if err != nil {
-		a.report(c, "promote_user", "db", slog.LevelError, err)
-		if errors.Is(err, sqldb.ErrDBNotFound) {
+		if errors.Is(err, sqldb.ErrNotFound) {
 			// The *target* user doesn't exist; the caller's auth is fine.
 			writeError(c, http.StatusNotFound, "user_not_found", nil)
 			return
 		}
+		a.report(c, "promote_user", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_promote_user_error", nil)
 		return
 	}
@@ -153,7 +153,7 @@ func (a *App) HandleGrantAdminRole(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-func (a *App) HandleRevokeAdminRole(c *gin.Context) {
+func (a *Server) handleRevokeAdminRole(c *gin.Context) {
 	userID := c.Param("user_id")
 	if userID == "" {
 		writeError(c, http.StatusBadRequest, "invalid_user_id", nil)
@@ -162,12 +162,12 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 
 	user, err := a.db.DemoteUserFromAdmin(c.Request.Context(), userID, userUpdatedOutbox(requestID(c)))
 	if err != nil {
-		a.report(c, "demote_user", "db", slog.LevelError, err)
-		if errors.Is(err, sqldb.ErrDBNotFound) {
+		if errors.Is(err, sqldb.ErrNotFound) {
 			// The *target* user doesn't exist; the caller's auth is fine.
 			writeError(c, http.StatusNotFound, "user_not_found", nil)
 			return
 		}
+		a.report(c, "demote_user", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_demote_user_error", nil)
 		return
 	}
@@ -175,25 +175,24 @@ func (a *App) HandleRevokeAdminRole(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// ChangePasswordRequest represents the request body for password change
-type ChangePasswordRequest struct {
+type changePasswordRequest struct {
 	CurrentPassword string `json:"current_password"`
 	NewPassword     string `json:"new_password"`
 	PasswordConfirm string `json:"password_confirm"`
 }
 
-// HandlePasswordChange handles password change for authenticated users
-func (a *App) HandlePasswordChange(c *gin.Context) {
+// handlePasswordChange handles password changes for authenticated users.
+func (a *Server) handlePasswordChange(c *gin.Context) {
 	// Get authenticated user ID
-	userID, err := middleware.GetUserID(c)
+	userID, err := middleware.UserID(c)
 	if err != nil {
 		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return
 	}
 
-	var req ChangePasswordRequest
+	var req changePasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
+		writeRequestError(c, err)
 		return
 	}
 
@@ -220,11 +219,11 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	// Get user from database
 	user, err := a.db.GetUserByID(c.Request.Context(), userID)
 	if err != nil {
-		a.report(c, "change_password", "db", slog.LevelError, err)
-		if errors.Is(err, sqldb.ErrDBNotFound) {
+		if errors.Is(err, sqldb.ErrNotFound) {
 			writeError(c, http.StatusUnauthorized, "user_not_found", nil)
 			return
 		}
+		a.report(c, "change_password", "db", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_update_password_error", nil)
 		return
 	}
@@ -260,7 +259,7 @@ func (a *App) HandlePasswordChange(c *gin.Context) {
 	})
 }
 
-func validatePasswordChangeInput(req ChangePasswordRequest) map[string]string {
+func validatePasswordChangeInput(req changePasswordRequest) map[string]string {
 	validationErrors := make(map[string]string)
 
 	if req.CurrentPassword == "" {

@@ -1,84 +1,68 @@
-name: CI
+# Disabled: CI is not in use for this repo.
+# name: CI
 
-on:
-  # CI is staged for later. Uncomment these triggers when automatic checks
-  # should run on repository activity.
-  # push:
-  #   branches: [main]
-  # pull_request:
-  workflow_dispatch:
+# on:
+#   push:
+#     branches: [main]
+#   pull_request:
+#   workflow_dispatch:
 
-permissions:
-  contents: read
+# permissions:
+#   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+# concurrency:
+#   group: ci-${{ github.ref }}
+#   cancel-in-progress: true
 
-jobs:
-  checks:
-    name: Build, lint, unit tests
-    runs-on: ubuntu-latest
-    env:
-      # Test-only signing keys (>= 32 bytes each); never used outside CI.
-      JWT_ACCESS_TOKEN_SECRET: ci-only-access-secret-0123456789abcdef
-    steps:
-      - uses: actions/checkout@v4
+# env:
+#   GOFLAGS: -mod=readonly
+#   GOLANGCI_LINT_VERSION: v2.12.2
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+# jobs:
+#   checks:
+#     name: Verify and unit tests
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 20
+#     env:
+#       # Test-only signing keys (>= 32 bytes each); never used outside CI.
+#       JWT_ACCESS_TOKEN_SECRET: ci-only-access-secret-0123456789abcdef
+#     steps:
+#       - uses: actions/checkout@v4
 
-      - name: Build
-        run: go build ./...
+#       - uses: actions/setup-go@v5
+#         with:
+#           go-version-file: go.mod
+#           cache: true
 
-      - name: Format
-        run: |
-          unformatted="$(gofmt -l ./cmd ./internal)"
-          test -z "${unformatted}" || {
-            echo "The following files need gofmt:"
-            echo "${unformatted}"
-            exit 1
-          }
+#       - name: Install golangci-lint
+#         env:
+#           GOBIN: ${{ runner.temp }}/go-bin
+#           GOFLAGS: ""
+#         run: |
+#           mkdir -p "${GOBIN}"
+#           echo "${GOBIN}" >> "${GITHUB_PATH}"
+#           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@"${GOLANGCI_LINT_VERSION}"
 
-      - name: Verify dependency checksums
-        run: go mod verify
+#       - name: Verify
+#         run: make verify TEST_FLAGS=-race
 
-      - name: Vet
-        run: go vet ./...
+#       - name: Vulnerability scan
+#         uses: golang/govulncheck-action@v1
+#         with:
+#           go-version-file: go.mod
+#           go-package: ./...
 
-      - name: Staticcheck
-        run: go tool staticcheck ./...
+#   db-tests:
+#     name: Database tests (testcontainers)
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 20
+#     steps:
+#       - uses: actions/checkout@v4
 
-      - name: Unit tests
-        run: >-
-          go test -race
-          ./cmd/...
-          ./internal/app/...
-          ./internal/sdk/config/...
-          ./internal/sdk/errs/...
-          ./internal/sdk/middleware/...
-          ./internal/sdk/models/...
-          ./internal/sdk/observability/...
-          ./internal/services/...
+#       - uses: actions/setup-go@v5
+#         with:
+#           go-version-file: go.mod
+#           cache: true
 
-      - name: Vulnerability scan
-        uses: golang/govulncheck-action@v1
-        with:
-          go-version-file: go.mod
-          go-package: ./...
-
-  db-tests:
-    name: Database tests (testcontainers)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: sqldb tests against real Postgres
-        run: go test -race ./internal/sdk/sqldb/...
+#       - name: sqldb tests against real Postgres
+#         run: make test-db TEST_FLAGS=-race

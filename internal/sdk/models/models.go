@@ -3,27 +3,42 @@ package models
 
 import "time"
 
+const (
+	// TopicUserCreated carries newly registered users.
+	TopicUserCreated = "iam.user.created"
+	// TopicUserUpdated carries user profile and role changes.
+	TopicUserUpdated = "iam.user.updated"
+	// HeaderCorrelationID links an event to its originating request.
+	HeaderCorrelationID = "correlation_id"
+)
+
+// Role identifies a user's authorization role.
 type Role string
 
 const (
-	RoleUser  Role = "user"
+	// RoleUser grants standard user permissions.
+	RoleUser Role = "user"
+	// RoleAdmin grants administrative permissions.
 	RoleAdmin Role = "admin"
 )
 
+// Valid reports whether r is a recognized role.
 func (r Role) Valid() bool {
 	return r == RoleUser || r == RoleAdmin
 }
 
+// Principal identifies an authenticated user and their authorization role.
 type Principal struct {
 	ID   string `json:"id"`
 	Role Role   `json:"role"`
 }
 
+// IsAdmin reports whether p has the administrator role.
 func (p Principal) IsAdmin() bool {
 	return p.Role == RoleAdmin
 }
 
-// RefreshToken represents a refresh token for a user
+// RefreshToken represents a stored refresh token for a user.
 type RefreshToken struct {
 	ID        string     `json:"id"`
 	UserID    string     `json:"user_id"`
@@ -34,13 +49,14 @@ type RefreshToken struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
+// NewRefreshToken contains the values required to store a refresh token.
 type NewRefreshToken struct {
 	UserID    string
 	Token     []byte
 	ExpiresAt time.Time
 }
 
-// User represents a user in the system
+// User represents an IAM user.
 type User struct {
 	ID            string    `json:"id"`
 	Name          string    `json:"name"`
@@ -58,14 +74,15 @@ type User struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+// NewUser contains the values required to create a user.
 type NewUser struct {
-	Name            string `json:"name"`
-	Account         string `json:"account"`
-	Email           string `json:"email"`
-	Password        []byte `json:"password"`
-	PasswordConfirm []byte `json:"password_confirm"`
+	Name     string
+	Account  string
+	Email    string
+	Password []byte
 }
 
+// UpdateUser contains mutable user profile fields.
 type UpdateUser struct {
 	Name    string  `json:"name"`
 	Account string  `json:"account"`
@@ -75,7 +92,7 @@ type UpdateUser struct {
 	Phone   *string `json:"phone"`
 }
 
-// PasswordResetToken represents a password reset token for a user
+// PasswordResetToken represents a stored password-reset token for a user.
 type PasswordResetToken struct {
 	ID        string     `json:"id"`
 	UserID    string     `json:"user_id"`
@@ -85,6 +102,7 @@ type PasswordResetToken struct {
 	CreatedAt time.Time  `json:"created_at"`
 }
 
+// NewPasswordResetToken contains the values required to store a password-reset token.
 type NewPasswordResetToken struct {
 	UserID    string
 	Token     string
@@ -110,12 +128,14 @@ type OutboxRow struct {
 	CreatedAt time.Time
 }
 
+// Liveness describes the process state returned by the liveness endpoint.
 type Liveness struct {
 	Status     string `json:"status"`
 	Host       string `json:"host"`
 	GOMAXPROCS int    `json:"gomaxprocs"`
 }
 
+// UserCreatedEvent describes a newly created user for event consumers.
 type UserCreatedEvent struct {
 	EventType  string    `json:"event_type"`
 	UserID     string    `json:"user_id"`
@@ -127,6 +147,7 @@ type UserCreatedEvent struct {
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
+// UserUpdatedEvent describes updated user state for event consumers.
 type UserUpdatedEvent struct {
 	EventType     string    `json:"event_type"`
 	UserID        string    `json:"user_id"`

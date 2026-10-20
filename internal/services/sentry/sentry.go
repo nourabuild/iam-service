@@ -3,12 +3,14 @@ package sentry
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/url"
 
 	githubsentry "github.com/getsentry/sentry-go"
 	sentrygin "github.com/getsentry/sentry-go/gin"
 	"github.com/gin-gonic/gin"
+
 	"github.com/nourabuild/iam-service/internal/sdk/config"
 	"github.com/nourabuild/iam-service/internal/sdk/middleware"
 )
@@ -42,7 +44,9 @@ func newSentryDataCollection() *githubsentry.DataCollection {
 	}
 }
 
-func SetupSentry(ctx context.Context, cfg config.Sentry, logger *slog.Logger) (func(context.Context) error, error) {
+// Setup initializes Sentry and returns a function that flushes buffered events.
+// When Sentry is disabled, the returned function is a no-op.
+func Setup(ctx context.Context, cfg config.Sentry, logger *slog.Logger) (func(context.Context) error, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -52,13 +56,17 @@ func SetupSentry(ctx context.Context, cfg config.Sentry, logger *slog.Logger) (f
 	}
 
 	if err := githubsentry.Init(clientOptions(cfg)); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("initialize Sentry: %w", err)
 	}
 
 	logger.InfoContext(ctx, "sentry enabled", "environment", cfg.Environment)
 	return func(ctx context.Context) error {
 		if ok := githubsentry.FlushWithContext(ctx); !ok {
-			return context.DeadlineExceeded
+			flushErr := ctx.Err()
+			if flushErr == nil {
+				flushErr = context.Canceled
+			}
+			return fmt.Errorf("flush Sentry events: %w", flushErr)
 		}
 		return nil
 	}, nil
@@ -71,8 +79,8 @@ func clientOptions(cfg config.Sentry) githubsentry.ClientOptions {
 		Release:          cfg.Release,
 		AttachStacktrace: true,
 		DataCollection:   newSentryDataCollection(),
-		EnableTracing:    cfg.SentryTracesSampleRate > 0,
-		TracesSampleRate: cfg.SentryTracesSampleRate,
+		EnableTracing:    cfg.TracesSampleRate > 0,
+		TracesSampleRate: cfg.TracesSampleRate,
 		BeforeSend: func(event *githubsentry.Event, _ *githubsentry.EventHint) *githubsentry.Event {
 			return scrubSentryRequest(event)
 		},
@@ -141,6 +149,7 @@ func removeSensitiveHeaders(headers map[string]string) {
 	}
 }
 
+// CaptureException records err at level with the supplied tags.
 func CaptureException(ctx context.Context, err error, level githubsentry.Level, tags map[string]string) {
 	if err == nil {
 		return
@@ -165,6 +174,7 @@ func CaptureException(ctx context.Context, err error, level githubsentry.Level, 
 	})
 }
 
+// LevelFromSlog maps a slog level to its Sentry equivalent.
 func LevelFromSlog(level slog.Level) githubsentry.Level {
 	switch {
 	case level >= slog.LevelError:
@@ -178,15 +188,17 @@ func LevelFromSlog(level slog.Level) githubsentry.Level {
 	}
 }
 
-func SentryMiddleware(cfg config.Sentry) gin.HandlerFunc {
+// Middleware returns the Sentry Gin middleware.
+func Middleware(cfg config.Sentry) gin.HandlerFunc {
 	return sentrygin.New(sentrygin.Options{
 		Repanic:         true,
 		WaitForDelivery: false,
-		Timeout:         cfg.SentryFlushTimeout,
+		Timeout:         cfg.FlushTimeout,
 	})
 }
 
-func SentryRequestContext() gin.HandlerFunc {
+// RequestContext adds request metadata to the current Sentry scope.
+func RequestContext() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if hub := sentrygin.GetHubFromContext(c); hub != nil {
 			hub.ConfigureScope(func(scope *githubsentry.Scope) {
@@ -202,7 +214,8 @@ func SentryRequestContext() gin.HandlerFunc {
 	}
 }
 
-func SentryPrincipal() gin.HandlerFunc {
+// Principal adds the authenticated principal to the current Sentry scope.
+func Principal() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		principal, err := middleware.Principal(c)
 		if err == nil {

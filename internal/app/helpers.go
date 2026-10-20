@@ -2,13 +2,15 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/nourabuild/iam-service/internal/sdk/models"
-	"github.com/nourabuild/iam-service/internal/services/kafka"
 	sentrysvc "github.com/nourabuild/iam-service/internal/services/sentry"
 )
 
@@ -24,6 +26,15 @@ func writeError(c *gin.Context, status int, errCode string, details map[string]s
 	c.JSON(status, response)
 }
 
+func writeRequestError(c *gin.Context, err error) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		writeError(c, http.StatusRequestEntityTooLarge, "request_too_large", nil)
+		return
+	}
+	writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
+}
+
 // normalizeEmail canonicalizes an email address so lookups and the unique
 // index on lower(email) agree: User@X.com and user@x.com are the same identity.
 func normalizeEmail(email string) string {
@@ -31,7 +42,7 @@ func normalizeEmail(email string) string {
 }
 
 // =============================================================================
-func (a *App) storeRefreshToken(ctx context.Context, userID, refreshToken string, expiresAt time.Time) error {
+func (a *Server) storeRefreshToken(ctx context.Context, userID, refreshToken string, expiresAt time.Time) error {
 	_, err := a.db.CreateRefreshToken(ctx, models.NewRefreshToken{
 		UserID:    userID,
 		Token:     []byte(refreshToken),
@@ -50,7 +61,7 @@ func outboxHeaders(requestID, fallback string) map[string]string {
 	if correlationID == "" {
 		return nil
 	}
-	return map[string]string{kafka.HeaderCorrelationID: correlationID}
+	return map[string]string{models.HeaderCorrelationID: correlationID}
 }
 
 func requestID(c *gin.Context) string {
@@ -60,11 +71,11 @@ func requestID(c *gin.Context) string {
 	return c.GetHeader("X-Request-ID")
 }
 
-func (a *App) report(c *gin.Context, handler, errType string, level slog.Level, err error) {
+func (a *Server) report(c *gin.Context, handler, errType string, level slog.Level, err error) {
 	a.reportBackground(c.Request.Context(), handler, errType, level, err, requestID(c))
 }
 
-func (a *App) reportBackground(ctx context.Context, handler, errType string, level slog.Level, err error, requestID string) {
+func (a *Server) reportBackground(ctx context.Context, handler, errType string, level slog.Level, err error, requestID string) {
 	tags := map[string]string{
 		"handler":    handler,
 		"error_type": errType,

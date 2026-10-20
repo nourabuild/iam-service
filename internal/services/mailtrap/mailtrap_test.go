@@ -28,7 +28,7 @@ func TestSendPasswordResetEmailUsesConfiguredEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewMailtrapService(config.Mailtrap{
+	client := New(config.Mailtrap{
 		APIToken:         "api-token",
 		APIURL:           server.URL + "/custom/send",
 		TemplateUUID:     "template-id",
@@ -53,12 +53,12 @@ func TestSendPasswordResetEmailUsesConfiguredEndpoint(t *testing.T) {
 }
 
 func TestSendPasswordResetEmailHonorsCancellation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
 
-	client := NewMailtrapService(config.Mailtrap{
+	client := New(config.Mailtrap{
 		APIToken:         "api-token",
 		APIURL:           server.URL,
 		SenderEmail:      "noreply@example.com",
@@ -85,7 +85,7 @@ func TestSendPasswordResetEmailDoesNotFollowRedirects(t *testing.T) {
 	}))
 	defer source.Close()
 
-	client := NewMailtrapService(config.Mailtrap{
+	client := New(config.Mailtrap{
 		APIToken:         "api-token",
 		APIURL:           source.URL,
 		TemplateUUID:     "template-id",

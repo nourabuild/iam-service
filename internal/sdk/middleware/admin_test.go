@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
@@ -30,7 +31,7 @@ func TestAuthorizeAdmin(t *testing.T) {
 	}{
 		{
 			name:           "no principal in context",
-			seed:           func(c *gin.Context) {},
+			seed:           func(*gin.Context) {},
 			expectedStatus: http.StatusUnauthorized,
 		},
 		{
@@ -54,7 +55,10 @@ func TestAuthorizeAdmin(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			engine := newAdminEngine(tt.seed)
 
-			req, _ := http.NewRequest(http.MethodGet, "/admin", nil)
+			req, err := http.NewRequest(http.MethodGet, "/admin", nil)
+			if err != nil {
+				t.Fatalf("creating admin request: %v", err)
+			}
 			rr := httptest.NewRecorder()
 			engine.ServeHTTP(rr, req)
 

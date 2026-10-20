@@ -5,6 +5,7 @@ import (
 	"time"
 
 	gojwt "github.com/golang-jwt/jwt/v5"
+
 	"github.com/nourabuild/iam-service/internal/sdk/config"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
@@ -14,10 +15,10 @@ const (
 	testIssuer = "noura-iam-service-test"
 )
 
-func mustService(t *testing.T) *TokenService {
+func mustService(t *testing.T) *Service {
 	t.Helper()
 
-	return NewTokenService(config.AuthConfig{
+	return New(config.Auth{
 		JWTSecret:       testSecret,
 		Issuer:          testIssuer,
 		AccessTokenTTL:  15 * time.Minute,
@@ -25,19 +26,19 @@ func mustService(t *testing.T) *TokenService {
 	})
 }
 
-func testUser(id string, role models.Role) models.User {
+func testUser(role models.Role) models.User {
 	return models.User{
-		ID:      id,
+		ID:      "user-123",
 		IsAdmin: role == models.RoleAdmin,
 		Role:    role,
 	}
 }
 
-func parseClaims(t *testing.T, svc *TokenService, tokenString string) *Claims {
+func parseClaims(t *testing.T, svc *Service, tokenString string) *claims {
 	t.Helper()
 
-	claims := new(Claims)
-	token, err := gojwt.ParseWithClaims(tokenString, claims, func(token *gojwt.Token) (any, error) {
+	claims := new(claims)
+	token, err := gojwt.ParseWithClaims(tokenString, claims, func(*gojwt.Token) (any, error) {
 		return svc.secret, nil
 	})
 	if err != nil {
@@ -49,7 +50,7 @@ func parseClaims(t *testing.T, svc *TokenService, tokenString string) *Claims {
 	return claims
 }
 
-func TestNewTokenService(t *testing.T) {
+func TestNew(t *testing.T) {
 	svc := mustService(t)
 
 	if string(svc.secret) != testSecret {
@@ -70,7 +71,7 @@ func TestIssuePairAndParseAccessToken(t *testing.T) {
 	svc := mustService(t)
 	now := time.Now().UTC()
 
-	pair, err := svc.IssuePair(testUser("user-123", models.RoleAdmin), now)
+	pair, err := svc.IssuePair(testUser(models.RoleAdmin), now)
 	if err != nil {
 		t.Fatalf("IssuePair returned error: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestIssuePairAndParseAccessToken(t *testing.T) {
 
 func TestTokensAreUnique(t *testing.T) {
 	svc := mustService(t)
-	user := testUser("user-123", models.RoleUser)
+	user := testUser(models.RoleUser)
 	now := time.Now().UTC()
 
 	pair1, err := svc.IssuePair(user, now)
@@ -135,9 +136,9 @@ func TestRoleFallsBackToIsAdmin(t *testing.T) {
 	svc := mustService(t)
 	user := models.User{ID: "user-123", IsAdmin: true}
 
-	token, _, err := svc.IssueAccessToken(user, time.Now().UTC())
+	token, _, err := svc.issueAccessToken(user, time.Now().UTC())
 	if err != nil {
-		t.Fatalf("IssueAccessToken returned error: %v", err)
+		t.Fatalf("issueAccessToken returned error: %v", err)
 	}
 
 	principal, err := svc.ParseAccessToken(token)
@@ -153,9 +154,9 @@ func TestInvalidRoleFallsBackToIsAdmin(t *testing.T) {
 	svc := mustService(t)
 	user := models.User{ID: "user-123", Role: models.Role("superuser"), IsAdmin: true}
 
-	token, _, err := svc.IssueAccessToken(user, time.Now().UTC())
+	token, _, err := svc.issueAccessToken(user, time.Now().UTC())
 	if err != nil {
-		t.Fatalf("IssueAccessToken returned error: %v", err)
+		t.Fatalf("issueAccessToken returned error: %v", err)
 	}
 	principal, err := svc.ParseAccessToken(token)
 	if err != nil {
@@ -168,7 +169,7 @@ func TestInvalidRoleFallsBackToIsAdmin(t *testing.T) {
 
 func TestMissingTokenTypeRejected(t *testing.T) {
 	svc := mustService(t)
-	claims := Claims{
+	claims := claims{
 		Role: string(models.RoleUser),
 		RegisteredClaims: gojwt.RegisteredClaims{
 			Subject:   "user-123",
@@ -189,9 +190,9 @@ func TestParseExpiredToken(t *testing.T) {
 	svc := mustService(t)
 	svc.accessTokenTTL = -time.Minute
 
-	token, _, err := svc.IssueAccessToken(testUser("user-123", models.RoleUser), time.Now().UTC())
+	token, _, err := svc.issueAccessToken(testUser(models.RoleUser), time.Now().UTC())
 	if err != nil {
-		t.Fatalf("IssueAccessToken returned error: %v", err)
+		t.Fatalf("issueAccessToken returned error: %v", err)
 	}
 
 	if _, err := svc.ParseAccessToken(token); err == nil {
@@ -205,9 +206,9 @@ func TestWrongSignatureRejected(t *testing.T) {
 	other := *svc
 	other.secret = []byte("a-completely-different-secret-key-value")
 
-	token, _, err := other.IssueAccessToken(testUser("user-123", models.RoleUser), time.Now().UTC())
+	token, _, err := other.issueAccessToken(testUser(models.RoleUser), time.Now().UTC())
 	if err != nil {
-		t.Fatalf("IssueAccessToken returned error: %v", err)
+		t.Fatalf("issueAccessToken returned error: %v", err)
 	}
 
 	if _, err := svc.ParseAccessToken(token); err == nil {
@@ -218,7 +219,7 @@ func TestWrongSignatureRejected(t *testing.T) {
 func TestAlgNoneRejected(t *testing.T) {
 	svc := mustService(t)
 
-	claims := Claims{
+	claims := claims{
 		Role:      string(models.RoleUser),
 		TokenType: accessTokenType,
 		RegisteredClaims: gojwt.RegisteredClaims{
@@ -244,9 +245,9 @@ func TestIssuerMismatchRejected(t *testing.T) {
 	other := *svc
 	other.issuer = "some-other-service"
 
-	token, _, err := other.IssueAccessToken(testUser("user-123", models.RoleUser), time.Now().UTC())
+	token, _, err := other.issueAccessToken(testUser(models.RoleUser), time.Now().UTC())
 	if err != nil {
-		t.Fatalf("IssueAccessToken returned error: %v", err)
+		t.Fatalf("issueAccessToken returned error: %v", err)
 	}
 
 	if _, err := svc.ParseAccessToken(token); err == nil {

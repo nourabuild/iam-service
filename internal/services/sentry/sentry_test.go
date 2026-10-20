@@ -1,12 +1,41 @@
 package sentry
 
 import (
+	"context"
+	"log/slog"
 	"net/url"
 	"testing"
 
 	githubsentry "github.com/getsentry/sentry-go"
+
 	"github.com/nourabuild/iam-service/internal/sdk/config"
 )
+
+func TestSetupDisabledReturnsNoopShutdown(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	shutdown, err := Setup(context.Background(), config.Sentry{}, logger)
+	if err != nil {
+		t.Fatalf("Setup returned error: %v", err)
+	}
+	if shutdown == nil {
+		t.Fatal("Setup returned a nil shutdown function")
+	}
+	if err := shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown returned error: %v", err)
+	}
+}
+
+func TestMiddlewareConstructors(t *testing.T) {
+	if Middleware(config.Sentry{}) == nil {
+		t.Fatal("Middleware returned nil")
+	}
+	if RequestContext() == nil {
+		t.Fatal("RequestContext returned nil")
+	}
+	if Principal() == nil {
+		t.Fatal("Principal returned nil")
+	}
+}
 
 func TestScrubSentryRequestFiltersBearerParameters(t *testing.T) {
 	event := &githubsentry.Event{Request: &githubsentry.Request{
@@ -28,8 +57,8 @@ func TestScrubSentryRequestFiltersBearerParameters(t *testing.T) {
 
 func TestSentryCallbacksRemoveCredentialData(t *testing.T) {
 	options := clientOptions(config.Sentry{
-		DSN:                    "https://public@example.com/1",
-		SentryTracesSampleRate: 1,
+		DSN:              "https://public@example.com/1",
+		TracesSampleRate: 1,
 	})
 
 	callbacks := map[string]func(*githubsentry.Event, *githubsentry.EventHint) *githubsentry.Event{

@@ -2,13 +2,13 @@ package observability
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/nourabuild/iam-service/internal/sdk/config"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -17,10 +17,13 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/nourabuild/iam-service/internal/sdk/config"
 )
 
 const instrumentationName = "github.com/nourabuild/iam-service/internal/sdk/observability"
 
+// SetupTracing configures OpenTelemetry tracing and returns its shutdown function.
 func SetupTracing(ctx context.Context, cfg config.Observability, logger *slog.Logger) (func(context.Context) error, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -33,13 +36,13 @@ func SetupTracing(ctx context.Context, cfg config.Observability, logger *slog.Lo
 
 	exporter, err := otlptracehttp.New(ctx, otlpHTTPOptions(cfg.OTLPHTTPEndpoint)...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create OTLP trace exporter: %w", err)
 	}
 
 	res, err := resource.New(ctx, resource.WithAttributes(attribute.String("service.name", cfg.ServiceName)))
 	if err != nil {
 		_ = exporter.Shutdown(ctx)
-		return nil, err
+		return nil, fmt.Errorf("create OpenTelemetry resource: %w", err)
 	}
 
 	provider := sdktrace.NewTracerProvider(

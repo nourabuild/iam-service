@@ -13,14 +13,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/nourabuild/iam-service/internal/sdk/middleware"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
-	"github.com/nourabuild/iam-service/internal/services/kafka"
 )
 
 type userHandlerDBStub struct {
-	sqldb.Service
+	store
+
 	updateUser  func(context.Context, string, models.UpdateUser, sqldb.OutboxEventFunc) (models.User, error)
 	getUserByID func(context.Context, string) (models.User, error)
 	listUsers   func(context.Context) ([]models.User, error)
@@ -131,13 +132,13 @@ func TestUserUpdatedOutbox(t *testing.T) {
 	message := userUpdatedOutbox("request-123")(user)
 	after := time.Now().UTC()
 
-	if message.Topic != kafka.ProduceTopicUserUpdated {
-		t.Errorf("topic = %q, want %q", message.Topic, kafka.ProduceTopicUserUpdated)
+	if message.Topic != models.TopicUserUpdated {
+		t.Errorf("topic = %q, want %q", message.Topic, models.TopicUserUpdated)
 	}
 	if message.Key != user.ID {
 		t.Errorf("key = %q, want %q", message.Key, user.ID)
 	}
-	if got := message.Headers[kafka.HeaderCorrelationID]; got != "request-123" {
+	if got := message.Headers[models.HeaderCorrelationID]; got != "request-123" {
 		t.Errorf("correlation header = %q, want %q", got, "request-123")
 	}
 
@@ -169,7 +170,7 @@ func TestUserUpdatedOutbox(t *testing.T) {
 	}
 
 	fallbackMessage := userUpdatedOutbox("")(user)
-	if got := fallbackMessage.Headers[kafka.HeaderCorrelationID]; got != user.ID {
+	if got := fallbackMessage.Headers[models.HeaderCorrelationID]; got != user.ID {
 		t.Errorf("fallback correlation header = %q, want %q", got, user.ID)
 	}
 }
@@ -184,7 +185,7 @@ func TestHandleUpdateAccount(t *testing.T) {
 			`{"name":"Ada Lovelace","account":"adalovelace"}`,
 		)
 
-		(&App{}).HandleUpdateAccount(c)
+		(&Server{}).handleUpdateAccount(c)
 
 		assertUserHandlerError(t, response, http.StatusUnauthorized, "unauthorized", nil)
 	})
@@ -254,7 +255,7 @@ func TestHandleUpdateAccount(t *testing.T) {
 		)
 		middleware.SetPrincipal(c, models.Principal{ID: "user-123", Role: models.RoleUser})
 
-		(&App{db: db}).HandleUpdateAccount(c)
+		(&Server{db: db}).handleUpdateAccount(c)
 
 		assertUserHandlerError(
 			t,
@@ -302,7 +303,7 @@ func TestHandleMe(t *testing.T) {
 	t.Run("missing principal", func(t *testing.T) {
 		c, response := newUserHandlerContext(http.MethodGet, uri, "")
 
-		(&App{}).HandleMe(c)
+		(&Server{}).handleMe(c)
 
 		assertUserHandlerError(t, response, http.StatusUnauthorized, "unauthorized", nil)
 	})
@@ -315,7 +316,7 @@ func TestHandleMe(t *testing.T) {
 	}{
 		{
 			name:       "user not found",
-			dbError:    sqldb.ErrDBNotFound,
+			dbError:    sqldb.ErrNotFound,
 			wantStatus: http.StatusUnauthorized,
 			wantError:  "user_not_found",
 		},
@@ -337,7 +338,7 @@ func TestHandleMe(t *testing.T) {
 			c, response := newUserHandlerContext(http.MethodGet, uri, "")
 			middleware.SetPrincipal(c, models.Principal{ID: "user-123", Role: models.RoleUser})
 
-			(&App{db: db}).HandleMe(c)
+			(&Server{db: db}).handleMe(c)
 
 			assertUserHandlerError(t, response, tt.wantStatus, tt.wantError, nil)
 		})
@@ -370,7 +371,7 @@ func TestHandleListUsers(t *testing.T) {
 		}
 		c, response := newUserHandlerContext(http.MethodGet, uri, "")
 
-		(&App{db: db}).HandleListUsers(c)
+		(&Server{db: db}).handleListUsers(c)
 
 		assertUserHandlerError(
 			t,
@@ -404,7 +405,7 @@ func TestHandleGrantAdminRole(t *testing.T) {
 	t.Run("empty user ID", func(t *testing.T) {
 		c, response := newUserHandlerContext(http.MethodPost, "/api/v1/admin//roles/grant", "")
 
-		(&App{}).HandleGrantAdminRole(c)
+		(&Server{}).handleGrantAdminRole(c)
 
 		assertUserHandlerError(t, response, http.StatusBadRequest, "invalid_user_id", nil)
 	})
@@ -468,7 +469,7 @@ func TestHandleRevokeAdminRole(t *testing.T) {
 	t.Run("empty user ID", func(t *testing.T) {
 		c, response := newUserHandlerContext(http.MethodPost, "/api/v1/admin//roles/revoke", "")
 
-		(&App{}).HandleRevokeAdminRole(c)
+		(&Server{}).handleRevokeAdminRole(c)
 
 		assertUserHandlerError(t, response, http.StatusBadRequest, "invalid_user_id", nil)
 	})

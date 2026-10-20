@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/nourabuild/iam-service/internal/sdk/middleware"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
@@ -304,7 +305,8 @@ func TestHandlePasswordChange(t *testing.T) {
 }
 
 type passwordChangeDBStub struct {
-	sqldb.Service
+	store
+
 	getUserByIDFn                       func(context.Context, string) (models.User, error)
 	updateUserPasswordAndRevokeTokensFn func(context.Context, string, []byte) error
 }
@@ -327,13 +329,13 @@ func (s *passwordChangeDBStub) UpdateUserPasswordAndRevokeTokens(
 	return s.updateUserPasswordAndRevokeTokensFn(ctx, userID, password)
 }
 
-func passwordChangeRouter(a *App, userID string) *gin.Engine {
+func passwordChangeRouter(a *Server, userID string) *gin.Engine {
 	router := gin.New()
 	router.POST("/change", func(c *gin.Context) {
 		if userID != "" {
 			middleware.SetPrincipal(c, models.Principal{ID: userID, Role: models.RoleUser})
 		}
-		a.HandlePasswordChange(c)
+		a.handlePasswordChange(c)
 	})
 	return router
 }
@@ -356,7 +358,7 @@ func TestHandlePasswordChangeIdentityAndDatabaseFailures(t *testing.T) {
 		{
 			name:       "user no longer exists",
 			userID:     "missing-user",
-			getUserErr: sqldb.ErrDBNotFound,
+			getUserErr: sqldb.ErrNotFound,
 			wantStatus: http.StatusUnauthorized,
 			wantError:  "user_not_found",
 			wantReads:  1,
@@ -380,7 +382,7 @@ func TestHandlePasswordChangeIdentityAndDatabaseFailures(t *testing.T) {
 					return models.User{}, tt.getUserErr
 				},
 			}
-			a := NewApp(db, nil, nil, nil)
+			a := New(db, nil, nil, nil)
 
 			request := httptest.NewRequest(
 				http.MethodPost,

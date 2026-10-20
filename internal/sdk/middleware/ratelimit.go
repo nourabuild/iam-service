@@ -20,8 +20,8 @@ import (
 // Each instance keeps its own map of IP -> *rate.Limiter so different routes
 // can apply different policies (e.g. tighter limits on /login than /me).
 //
-// IMPORTANT: The IP used as the key comes from gin.Context.ClientIP(), which
-// honours X-Forwarded-For / X-Real-IP. If this service runs behind a proxy
+// The IP used as the key comes from gin.Context.ClientIP(), which honors
+// X-Forwarded-For and X-Real-IP. If this service runs behind a proxy
 // you do not control (or no proxy at all), set engine.SetTrustedProxies(...)
 // so a spoofed header can't be used to reset an attacker's bucket.
 func RateLimit(r rate.Limit, burst int) gin.HandlerFunc {
@@ -50,7 +50,7 @@ func retryAfterSeconds(limit rate.Limit) int {
 }
 
 // limiterStore is a concurrency-safe map of IP -> token bucket. An idle bucket
-// is evicted by a background sweeper after evictAfter elapses with no use,
+// is evicted during a later request after evictAfter elapses with no use,
 // so a steady stream of unique IPs can't grow the map without bound.
 type limiterStore struct {
 	mu        sync.Mutex

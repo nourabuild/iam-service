@@ -8,10 +8,6 @@ import (
 	"time"
 
 	"github.com/nourabuild/iam-service/internal/sdk/config"
-	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
-	"github.com/nourabuild/iam-service/internal/services/jwt"
-	"github.com/nourabuild/iam-service/internal/services/kafka"
-	"github.com/nourabuild/iam-service/internal/services/mailtrap"
 )
 
 func TestMetricsEndpoint(t *testing.T) {
@@ -27,20 +23,36 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 }
 
-func TestRegisterRoutesWithSentryAndInvalidTrustedProxy(t *testing.T) {
-	service := NewApp(
-		sqldb.NewMockService(),
-		jwt.NewMockTokenService(),
-		mailtrap.NewMockMailtrapService(),
-		kafka.NewMockProducer(),
+func TestJSONBodyLimitReturnsRequestEntityTooLarge(t *testing.T) {
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/auth/login",
+		strings.NewReader(`{"padding":"`+strings.Repeat("x", int(maxJSONBodyBytes))+`"}`),
 	)
-	router := service.RegisterRoutes(config.Config{
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	engine.ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d (body: %s)", response.Code, http.StatusRequestEntityTooLarge, response.Body.String())
+	}
+}
+
+func TestHandlerWithSentryAndInvalidTrustedProxy(t *testing.T) {
+	service := New(
+		newMockStore(),
+		newMockTokenService(),
+		newMockPasswordResetMailer(),
+		newMockEventProducer(),
+	)
+	router := service.Handler(config.Config{
 		HTTP: config.HTTP{
 			TrustedProxies: []string{"not-a-valid-proxy"},
 		},
 		Sentry: config.Sentry{
-			DSN:                "https://public@example.com/1",
-			SentryFlushTimeout: time.Second,
+			DSN:          "https://public@example.com/1",
+			FlushTimeout: time.Second,
 		},
 	})
 

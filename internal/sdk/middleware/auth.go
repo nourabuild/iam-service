@@ -5,12 +5,16 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/nourabuild/iam-service/internal/sdk/models"
-	"github.com/nourabuild/iam-service/internal/services/jwt"
 )
 
+type tokenParser interface {
+	ParseAccessToken(string) (models.Principal, error)
+}
+
 // Authenticate validates the Authorization header and attaches user context.
-func Authenticate(jwtService jwt.TokenRepository) gin.HandlerFunc {
+func Authenticate(tokens tokenParser) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -27,20 +31,19 @@ func Authenticate(jwtService jwt.TokenRepository) gin.HandlerFunc {
 			return
 		}
 
-		claims, err := jwtService.ParseAccessToken(parts[1])
+		principal, err := tokens.ParseAccessToken(parts[1])
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			c.Abort()
 			return
 		}
 
-		if claims.ID == "" {
+		if principal.ID == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			c.Abort()
 			return
 		}
 
-		principal := claims
 		if !principal.Role.Valid() {
 			principal.Role = models.RoleUser
 		}

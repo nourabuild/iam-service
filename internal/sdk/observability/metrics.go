@@ -31,6 +31,7 @@ func init() {
 	prometheus.MustRegister(httpRequestsTotal, httpRequestDuration)
 }
 
+// Metrics records request counts and durations labeled by method, route, and status.
 func Metrics() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()

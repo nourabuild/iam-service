@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"time"
-
-	"github.com/nourabuild/iam-service/internal/services/kafka"
 )
 
 const outboxBatchSize = 100
@@ -15,9 +13,9 @@ const outboxBatchSize = 100
 // are produced in commit (id) order and only marked published after Kafka
 // acknowledges them, giving at-least-once delivery: a crash between produce
 // and mark re-sends on the next tick, so consumers must be idempotent.
-func (a *App) RunOutboxRelay(ctx context.Context, interval time.Duration) {
-	if a.kafka == nil {
-		slog.Warn("outbox relay not started: kafka disabled; events will accumulate in auth.outbox until kafka returns")
+func (a *Server) RunOutboxRelay(ctx context.Context, interval time.Duration) {
+	if a.producer == nil {
+		slog.Warn("outbox relay not started: kafka disabled; events will accumulate in auth.outbox")
 		return
 	}
 
@@ -27,7 +25,7 @@ func (a *App) RunOutboxRelay(ctx context.Context, interval time.Duration) {
 	a.runOutboxRelay(ctx, ticker.C)
 }
 
-func (a *App) runOutboxRelay(ctx context.Context, ticks <-chan time.Time) {
+func (a *Server) runOutboxRelay(ctx context.Context, ticks <-chan time.Time) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -38,7 +36,7 @@ func (a *App) runOutboxRelay(ctx context.Context, ticks <-chan time.Time) {
 	}
 }
 
-func (a *App) drainOutbox(ctx context.Context) {
+func (a *Server) drainOutbox(ctx context.Context) {
 	for {
 		batchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		full, err := a.relayBatch(batchCtx)
@@ -59,7 +57,7 @@ func (a *App) drainOutbox(ctx context.Context) {
 
 // relayBatch publishes one batch. It returns true when the batch was full and
 // fully delivered, meaning more rows may be waiting.
-func (a *App) relayBatch(ctx context.Context) (bool, error) {
+func (a *Server) relayBatch(ctx context.Context) (bool, error) {
 	rows, err := a.db.FetchUnpublishedOutbox(ctx, outboxBatchSize)
 	if err != nil {
 		return false, err
@@ -71,13 +69,8 @@ func (a *App) relayBatch(ctx context.Context) (bool, error) {
 	published := make([]int64, 0, len(rows))
 	var produceErr error
 	for _, row := range rows {
-		headers := make([]kafka.RecordHeader, 0, len(row.Headers))
-		for k, v := range row.Headers {
-			headers = append(headers, kafka.RecordHeader{Key: k, Value: []byte(v)})
-		}
-
 		// json.RawMessage round-trips the stored payload byte-for-byte.
-		if err := a.kafka.Produce(ctx, row.Topic, []byte(row.Key), json.RawMessage(row.Payload), headers...); err != nil {
+		if err := a.producer.Produce(ctx, row.Topic, []byte(row.Key), json.RawMessage(row.Payload), row.Headers); err != nil {
 			// Stop at the first failure so per-user event ordering is
 			// preserved; the remainder retries on the next tick.
 			produceErr = err

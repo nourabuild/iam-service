@@ -1,0 +1,58 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+  build-tags:
+    - integration
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - canonicalheader
+    - contextcheck
+    - durationcheck
+    - embeddedstructfieldcheck
+    - errorlint
+    - errname
+    - godoclint
+    - gocritic
+    - iface
+    - interfacebloat
+    - ireturn
+    - loggercheck
+    - misspell
+    - modernize
+    - nilerr
+    - nilnesserr
+    - nolintlint
+    - predeclared
+    - recvcheck
+    - revive
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+  exclusions:
+    generated: strict
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/nourabuild/iam-service
+  exclusions:
+    generated: strict
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

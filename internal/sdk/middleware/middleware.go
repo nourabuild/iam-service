@@ -3,6 +3,7 @@ package middleware
 
 import (
 	"github.com/gin-gonic/gin"
+
 	"github.com/nourabuild/iam-service/internal/sdk/errs"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
@@ -14,6 +15,7 @@ func SetPrincipal(c *gin.Context, principal models.Principal) {
 	c.Set(principalKey, principal)
 }
 
+// Principal returns the authenticated principal stored in c.
 func Principal(c *gin.Context) (models.Principal, error) {
 	value, ok := c.Get(principalKey)
 	if !ok {
@@ -26,7 +28,8 @@ func Principal(c *gin.Context) (models.Principal, error) {
 	return principal, nil
 }
 
-func GetUserID(c *gin.Context) (string, error) {
+// UserID returns the authenticated user's ID from c.
+func UserID(c *gin.Context) (string, error) {
 	principal, err := Principal(c)
 	if err != nil {
 		return "", err

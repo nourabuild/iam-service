@@ -8,17 +8,18 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/nourabuild/iam-service/internal/sdk/config"
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/services/jwt"
 )
 
-// newTokenService builds a real TokenService so the middleware tests exercise
+// newTokenService builds a real token service so the middleware tests exercise
 // actual JWT parsing rather than a mock's approximation of it.
-func newTokenService(t *testing.T) *jwt.TokenService {
+func newTokenService(t *testing.T) *jwt.Service {
 	t.Helper()
 
-	return jwt.NewTokenService(config.AuthConfig{
+	return jwt.New(config.Auth{
 		JWTSecret:       "middleware-test-access-secret-0123456789",
 		Issuer:          "middleware-test",
 		AccessTokenTTL:  15 * time.Minute,
@@ -26,7 +27,7 @@ func newTokenService(t *testing.T) *jwt.TokenService {
 	})
 }
 
-func newAuthEngine(svc jwt.TokenRepository) *gin.Engine {
+func newAuthEngine(svc tokenParser) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.GET("/protected", Authenticate(svc), func(c *gin.Context) {
@@ -44,21 +45,23 @@ func TestAuthenticate(t *testing.T) {
 	svc := newTokenService(t)
 	engine := newAuthEngine(svc)
 
-	validToken, _, err := svc.IssueAccessToken(models.User{ID: "user-123", IsAdmin: true, Role: models.RoleAdmin}, time.Now().UTC())
+	validPair, err := svc.IssuePair(models.User{ID: "user-123", IsAdmin: true, Role: models.RoleAdmin}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("generating valid token: %v", err)
 	}
+	validToken := validPair.AccessToken
 
-	expiredSvc := jwt.NewTokenService(config.AuthConfig{
+	expiredSvc := jwt.New(config.Auth{
 		JWTSecret:       "middleware-test-access-secret-0123456789",
 		Issuer:          "middleware-test",
 		AccessTokenTTL:  -time.Minute,
 		RefreshTokenTTL: 30 * 24 * time.Hour,
 	})
-	expiredToken, _, err := expiredSvc.IssueAccessToken(models.User{ID: "user-123", Role: models.RoleUser}, time.Now().UTC())
+	expiredPair, err := expiredSvc.IssuePair(models.User{ID: "user-123", Role: models.RoleUser}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("generating expired token: %v", err)
 	}
+	expiredToken := expiredPair.AccessToken
 
 	tests := []struct {
 		name           string
@@ -110,7 +113,10 @@ func TestAuthenticate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req, _ := http.NewRequest(http.MethodGet, "/protected", nil)
+			req, err := http.NewRequest(http.MethodGet, "/protected", nil)
+			if err != nil {
+				t.Fatalf("creating protected request: %v", err)
+			}
 			if tt.authHeader != "" {
 				req.Header.Set("Authorization", tt.authHeader)
 			}
@@ -144,12 +150,12 @@ func TestAuthenticate(t *testing.T) {
 	}
 }
 
-func TestGetUserID(t *testing.T) {
+func TestUserID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	t.Run("missing", func(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
-		if _, err := GetUserID(c); err == nil {
+		if _, err := UserID(c); err == nil {
 			t.Fatal("expected error when user_id absent, got nil")
 		}
 	})
@@ -157,7 +163,7 @@ func TestGetUserID(t *testing.T) {
 	t.Run("wrong type", func(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Set(principalKey, 42)
-		if _, err := GetUserID(c); err == nil {
+		if _, err := UserID(c); err == nil {
 			t.Fatal("expected error for non-string user_id, got nil")
 		}
 	})
@@ -165,9 +171,9 @@ func TestGetUserID(t *testing.T) {
 	t.Run("present", func(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		SetPrincipal(c, models.Principal{ID: "user-123", Role: models.RoleUser})
-		id, err := GetUserID(c)
+		id, err := UserID(c)
 		if err != nil {
-			t.Fatalf("GetUserID returned error: %v", err)
+			t.Fatalf("UserID returned error: %v", err)
 		}
 		if id != "user-123" {
 			t.Fatalf("expected user-123, got %q", id)

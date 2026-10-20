@@ -4,11 +4,12 @@ import (
 	"log/slog"
 	"runtime/debug"
 
-	"github.com/nourabuild/iam-service/internal/sdk/errs"
-
 	"github.com/gin-gonic/gin"
+
+	"github.com/nourabuild/iam-service/internal/sdk/errs"
 )
 
+// Recovery converts panics into internal-error responses and logs their stacks.
 func Recovery(logger *slog.Logger) gin.HandlerFunc {
 	return gin.CustomRecovery(func(c *gin.Context, recovered any) {
 		if logger != nil {

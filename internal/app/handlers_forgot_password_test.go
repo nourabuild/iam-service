@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
 )
 
 type forgotPasswordDBStub struct {
-	sqldb.Service
+	store
+
 	getUserByEmailFn         func(context.Context, string) (models.User, error)
 	createPasswordResetToken func(context.Context, models.NewPasswordResetToken) (models.PasswordResetToken, error)
 }
@@ -51,9 +53,9 @@ func (s *forgotPasswordMailerStub) SendPasswordResetEmail(ctx context.Context, t
 	return s.sendFn(ctx, to, token)
 }
 
-func forgotPasswordRouter(a *App) *gin.Engine {
+func forgotPasswordRouter(a *Server) *gin.Engine {
 	router := gin.New()
-	router.POST("/forgot", a.HandleForgotPassword)
+	router.POST("/forgot", a.handleForgotPassword)
 	return router
 }
 
@@ -76,7 +78,7 @@ func TestHandleForgotPasswordRejectsInvalidBody(t *testing.T) {
 					return models.User{}, nil
 				},
 			}
-			a := NewApp(db, nil, nil, nil)
+			a := New(db, nil, nil, nil)
 
 			request := httptest.NewRequest(http.MethodPost, "/forgot", bytes.NewBufferString(tt.body))
 			request.Header.Set("Content-Type", "application/json")
@@ -134,7 +136,7 @@ func TestHandleForgotPasswordDoesNotRevealAccountState(t *testing.T) {
 		},
 		{
 			name:      "unknown account",
-			lookupErr: sqldb.ErrDBNotFound,
+			lookupErr: sqldb.ErrNotFound,
 		},
 		{
 			name:      "database lookup failure",
@@ -214,7 +216,7 @@ func TestHandleForgotPasswordDoesNotRevealAccountState(t *testing.T) {
 					return tt.sendErr
 				},
 			}
-			a := NewApp(db, nil, mailer, nil)
+			a := New(db, nil, mailer, nil)
 
 			started := time.Now()
 			request := httptest.NewRequest(

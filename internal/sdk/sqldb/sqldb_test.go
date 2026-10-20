@@ -1,3 +1,5 @@
+//go:build integration
+
 package sqldb
 
 import (
@@ -14,11 +16,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nourabuild/iam-service/internal/sdk/config"
-	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/nourabuild/iam-service/internal/sdk/config"
+	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
 const (
@@ -27,9 +30,9 @@ const (
 	testDBUser = "user"
 )
 
-func mustStartPostgresContainer() (func(context.Context) error, error) {
+func startPostgresContainer(ctx context.Context) (func(context.Context) error, error) {
 	dbContainer, err := postgres.Run(
-		context.Background(),
+		ctx,
 		"postgres:17.2",
 		postgres.WithDatabase(testDBName),
 		postgres.WithUsername(testDBUser),
@@ -46,25 +49,40 @@ func mustStartPostgresContainer() (func(context.Context) error, error) {
 	terminate := func(ctx context.Context) error {
 		return dbContainer.Terminate(ctx)
 	}
-
-	dbHost, err := dbContainer.Host(context.Background())
-	if err != nil {
-		return terminate, err
+	fail := func(err error) (func(context.Context) error, error) {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		return nil, errors.Join(err, terminate(cleanupCtx))
 	}
 
-	dbPort, err := dbContainer.MappedPort(context.Background(), "5432/tcp")
+	dbHost, err := dbContainer.Host(ctx)
 	if err != nil {
-		return terminate, err
+		return fail(err)
+	}
+
+	dbPort, err := dbContainer.MappedPort(ctx, "5432/tcp")
+	if err != nil {
+		return fail(err)
 	}
 
 	// New() reads connection settings from the environment at call time.
-	os.Setenv("BLUEPRINT_DB_DATABASE", testDBName)
-	os.Setenv("BLUEPRINT_DB_PASSWORD", testDBPwd)
-	os.Setenv("BLUEPRINT_DB_USERNAME", testDBUser)
-	os.Setenv("BLUEPRINT_DB_HOST", dbHost)
-	os.Setenv("BLUEPRINT_DB_PORT", dbPort.Port())
-	os.Setenv("BLUEPRINT_DB_SCHEMA", "public")
-	os.Setenv("BLUEPRINT_DB_SSLMODE", "disable")
+	environment := []struct {
+		key   string
+		value string
+	}{
+		{key: "BLUEPRINT_DB_DATABASE", value: testDBName},
+		{key: "BLUEPRINT_DB_PASSWORD", value: testDBPwd},
+		{key: "BLUEPRINT_DB_USERNAME", value: testDBUser},
+		{key: "BLUEPRINT_DB_HOST", value: dbHost},
+		{key: "BLUEPRINT_DB_PORT", value: dbPort.Port()},
+		{key: "BLUEPRINT_DB_SCHEMA", value: "public"},
+		{key: "BLUEPRINT_DB_SSLMODE", value: "disable"},
+	}
+	for _, variable := range environment {
+		if err := os.Setenv(variable.key, variable.value); err != nil {
+			return fail(fmt.Errorf("setting %s: %w", variable.key, err))
+		}
+	}
 
 	return terminate, nil
 }
@@ -72,7 +90,7 @@ func mustStartPostgresContainer() (func(context.Context) error, error) {
 // runMigrations applies every up-migration in order against the container, so
 // the suite tests the schema the service actually runs on — constraint
 // regressions fail here.
-func runMigrations() error {
+func runMigrations() (resultErr error) {
 	connStr := fmt.Sprintf(
 		// simple_protocol lets a single Exec carry the multi-statement
 		// migration files.
@@ -88,7 +106,9 @@ func runMigrations() error {
 	if err != nil {
 		return fmt.Errorf("opening migration connection: %w", err)
 	}
-	defer db.Close()
+	defer func() {
+		resultErr = errors.Join(resultErr, db.Close())
+	}()
 
 	files, err := filepath.Glob("../migrate/sql/*.up.sql")
 	if err != nil {
@@ -113,40 +133,53 @@ func runMigrations() error {
 }
 
 func TestMain(m *testing.M) {
+	os.Exit(runIntegrationTests(m))
+}
+
+func runIntegrationTests(m *testing.M) (code int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err := exec.CommandContext(ctx, "docker", "info", "--format", "{{.ServerVersion}}").Run()
 	cancel()
 	if err != nil {
-		if os.Getenv("CI") != "" {
-			log.Fatalf("Docker is required for sqldb tests in CI: %v", err)
-		}
-		log.Printf("skipping sqldb integration tests: Docker is unavailable: %v", err)
-		return
+		log.Printf("Docker is required for sqldb integration tests: %v", err)
+		return 1
 	}
 
-	teardown, err := mustStartPostgresContainer()
+	startupCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	teardown, err := startPostgresContainer(startupCtx)
+	cancel()
 	if err != nil {
-		log.Fatalf("could not start postgres container: %v", err)
+		log.Printf("could not start postgres container: %v", err)
+		return 1
 	}
+	defer func() {
+		teardownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := teardown(teardownCtx); err != nil {
+			log.Printf("could not teardown postgres container: %v", err)
+			code = 1
+		}
+	}()
 
 	if err := runMigrations(); err != nil {
-		log.Fatalf("could not run migrations: %v", err)
+		log.Printf("could not run migrations: %v", err)
+		return 1
 	}
 
-	code := m.Run()
-
-	if teardown != nil {
-		if err := teardown(context.Background()); err != nil {
-			log.Printf("could not teardown postgres container: %v", err)
-		}
-	}
-
-	os.Exit(code)
+	return m.Run()
 }
 
-func mustNew(t *testing.T) Service {
+func mustNew(t *testing.T) *Store {
 	t.Helper()
-	srv, err := New(config.LoadDB())
+	srv, err := New(t.Context(), config.DB{
+		Host:     os.Getenv("BLUEPRINT_DB_HOST"),
+		Port:     os.Getenv("BLUEPRINT_DB_PORT"),
+		Username: os.Getenv("BLUEPRINT_DB_USERNAME"),
+		Password: os.Getenv("BLUEPRINT_DB_PASSWORD"),
+		Database: os.Getenv("BLUEPRINT_DB_DATABASE"),
+		Schema:   os.Getenv("BLUEPRINT_DB_SCHEMA"),
+		SSLMode:  os.Getenv("BLUEPRINT_DB_SSLMODE"),
+	})
 	if err != nil {
 		t.Fatalf("New() returned error: %v", err)
 	}
@@ -158,9 +191,9 @@ func mustNew(t *testing.T) Service {
 	return srv
 }
 
-func createTestUser(t *testing.T, srv Service, account, email string) models.User {
+func createTestUser(t *testing.T, srv *Store, account, email string) models.User {
 	t.Helper()
-	user, err := srv.CreateUser(context.Background(), models.NewUser{
+	user, err := srv.CreateUser(t.Context(), models.NewUser{
 		Name:     "Test User",
 		Account:  account,
 		Email:    email,
@@ -176,22 +209,20 @@ func TestNew(t *testing.T) {
 	mustNew(t)
 }
 
-func TestHealth(t *testing.T) {
+func TestPingAndStats(t *testing.T) {
 	srv := mustNew(t)
 
-	stats := srv.Health()
-
-	if stats["status"] != "up" {
-		t.Fatalf("expected status to be up, got %s", stats["status"])
+	if err := srv.Ping(t.Context()); err != nil {
+		t.Fatalf("Ping returned error: %v", err)
 	}
-	if _, ok := stats["error"]; ok {
-		t.Fatalf("expected error not to be present")
+	if stats := srv.Stats(); stats.MaxOpenConnections != 25 {
+		t.Fatalf("MaxOpenConnections = %d, want 25", stats.MaxOpenConnections)
 	}
 }
 
 func TestUserLifecycle(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	user := createTestUser(t, srv, "lifecycle-user", "lifecycle@example.com")
 	if user.ID == "" {
@@ -217,8 +248,8 @@ func TestUserLifecycle(t *testing.T) {
 		t.Errorf("GetUserByID returned wrong email: %s", byID.Email)
 	}
 
-	if _, err := srv.GetUserByEmail(ctx, "nobody@example.com"); !errors.Is(err, ErrDBNotFound) {
-		t.Errorf("expected ErrDBNotFound for unknown email, got %v", err)
+	if _, err := srv.GetUserByEmail(ctx, "nobody@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for unknown email, got %v", err)
 	}
 
 	bio := "hello"
@@ -249,6 +280,16 @@ func TestUserLifecycle(t *testing.T) {
 	if demoted.IsAdmin {
 		t.Error("expected demoted user to not be admin")
 	}
+
+	users, err := srv.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("ListUsers returned error: %v", err)
+	}
+	for _, listed := range users {
+		if listed.ID == user.ID && len(listed.Password) != 0 {
+			t.Error("ListUsers loaded a password hash")
+		}
+	}
 }
 
 // TestEmailUniqueness is the regression test for the original composite
@@ -256,7 +297,7 @@ func TestUserLifecycle(t *testing.T) {
 // email as long as the account differed. Migration 000007 must prevent that.
 func TestEmailUniqueness(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	createTestUser(t, srv, "unique-email-1", "unique@example.com")
 
@@ -267,8 +308,8 @@ func TestEmailUniqueness(t *testing.T) {
 		Email:    "unique@example.com",
 		Password: []byte("not-a-real-hash"),
 	}, nil)
-	if !errors.Is(err, ErrDBDuplicatedEntry) {
-		t.Fatalf("duplicate email accepted; want ErrDBDuplicatedEntry, got %v", err)
+	if !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("duplicate email accepted; want ErrDuplicate, got %v", err)
 	}
 
 	// Case-variant email, different account: the index is on lower(email).
@@ -278,14 +319,14 @@ func TestEmailUniqueness(t *testing.T) {
 		Email:    "UNIQUE@example.com",
 		Password: []byte("not-a-real-hash"),
 	}, nil)
-	if !errors.Is(err, ErrDBDuplicatedEntry) {
-		t.Fatalf("case-variant duplicate email accepted; want ErrDBDuplicatedEntry, got %v", err)
+	if !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("case-variant duplicate email accepted; want ErrDuplicate, got %v", err)
 	}
 }
 
 func TestAccountUniqueness(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	createTestUser(t, srv, "unique-account", "account-1@example.com")
 
@@ -296,14 +337,14 @@ func TestAccountUniqueness(t *testing.T) {
 		Email:    "account-2@example.com",
 		Password: []byte("not-a-real-hash"),
 	}, nil)
-	if !errors.Is(err, ErrDBDuplicatedEntry) {
-		t.Fatalf("duplicate account accepted; want ErrDBDuplicatedEntry, got %v", err)
+	if !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("duplicate account accepted; want ErrDuplicate, got %v", err)
 	}
 }
 
 func TestRefreshTokenLifecycle(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	user := createTestUser(t, srv, "refresh-user", "refresh@example.com")
 	plaintext := []byte("refresh-token-plaintext-value")
@@ -346,8 +387,8 @@ func TestRefreshTokenLifecycle(t *testing.T) {
 	if err := srv.DeleteRefreshTokensByUserID(ctx, user.ID); err != nil {
 		t.Fatalf("DeleteRefreshTokensByUserID returned error: %v", err)
 	}
-	if _, err := srv.GetRefreshTokenByToken(ctx, plaintext); !errors.Is(err, ErrDBNotFound) {
-		t.Errorf("expected ErrDBNotFound after deletion, got %v", err)
+	if _, err := srv.GetRefreshTokenByToken(ctx, plaintext); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound after deletion, got %v", err)
 	}
 
 	// Foreign key: tokens cannot reference nonexistent users.
@@ -366,7 +407,7 @@ func TestRefreshTokenLifecycle(t *testing.T) {
 // replay becomes possible (lookup returns an arbitrary row of the pair).
 func TestRefreshTokenHashUniqueness(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	user := createTestUser(t, srv, "unique-token-user", "unique-token@example.com")
 	token := []byte("identical-refresh-token")
@@ -384,14 +425,14 @@ func TestRefreshTokenHashUniqueness(t *testing.T) {
 		Token:     token,
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
 	})
-	if !errors.Is(err, ErrDBDuplicatedEntry) {
-		t.Fatalf("duplicate token hash accepted; want ErrDBDuplicatedEntry, got %v", err)
+	if !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("duplicate token hash accepted; want ErrDuplicate, got %v", err)
 	}
 }
 
 func TestRotateRefreshToken(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	user := createTestUser(t, srv, "rotate-token-user", "rotate-token@example.com")
 
 	currentPlaintext := []byte("current-refresh-token")
@@ -434,14 +475,14 @@ func TestRotateRefreshToken(t *testing.T) {
 		Token:     []byte("second-replacement"),
 		ExpiresAt: time.Now().UTC().Add(2 * time.Hour),
 	})
-	if !errors.Is(err, ErrDBNotFound) {
-		t.Fatalf("rotated the same token twice; want ErrDBNotFound, got %v", err)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rotated the same token twice; want ErrNotFound, got %v", err)
 	}
 }
 
 func TestDeleteExpiredRefreshTokens(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	user := createTestUser(t, srv, "expired-user", "expired@example.com")
 
@@ -458,14 +499,14 @@ func TestDeleteExpiredRefreshTokens(t *testing.T) {
 		t.Fatalf("DeleteExpiredRefreshTokens returned error: %v", err)
 	}
 
-	if _, err := srv.GetRefreshTokenByToken(ctx, expired); !errors.Is(err, ErrDBNotFound) {
+	if _, err := srv.GetRefreshTokenByToken(ctx, expired); !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected expired token to be deleted, got %v", err)
 	}
 }
 
 func TestPasswordResetTokenLifecycle(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	user := createTestUser(t, srv, "reset-user", "reset@example.com")
 
@@ -492,8 +533,8 @@ func TestPasswordResetTokenLifecycle(t *testing.T) {
 	}
 
 	// Second redemption must fail: consumption is atomic.
-	if _, err := srv.ConsumePasswordResetToken(ctx, "reset-token-plaintext"); !errors.Is(err, ErrDBNotFound) {
-		t.Errorf("token consumed twice; want ErrDBNotFound, got %v", err)
+	if _, err := srv.ConsumePasswordResetToken(ctx, "reset-token-plaintext"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("token consumed twice; want ErrNotFound, got %v", err)
 	}
 
 	// Expired tokens must not be redeemable.
@@ -504,14 +545,14 @@ func TestPasswordResetTokenLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreatePasswordResetToken returned error: %v", err)
 	}
-	if _, err := srv.ConsumePasswordResetToken(ctx, "expired-reset-token"); !errors.Is(err, ErrDBNotFound) {
-		t.Errorf("expired token redeemed; want ErrDBNotFound, got %v", err)
+	if _, err := srv.ConsumePasswordResetToken(ctx, "expired-reset-token"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expired token redeemed; want ErrNotFound, got %v", err)
 	}
 }
 
 func TestUpdateUserPassword(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	user := createTestUser(t, srv, "passwd-user", "passwd@example.com")
 
@@ -527,14 +568,14 @@ func TestUpdateUserPassword(t *testing.T) {
 		t.Error("password was not updated")
 	}
 
-	if err := srv.UpdateUserPassword(ctx, "999999", []byte("x")); !errors.Is(err, ErrDBNotFound) {
-		t.Errorf("expected ErrDBNotFound for unknown user, got %v", err)
+	if err := srv.UpdateUserPassword(ctx, "999999", []byte("x")); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for unknown user, got %v", err)
 	}
 }
 
 func TestResetPasswordIsAtomicAndRevokesSessions(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	user := createTestUser(t, srv, "atomic-reset-user", "atomic-reset@example.com")
 
 	for _, token := range []string{"atomic-reset-token", "older-reset-token"} {
@@ -565,14 +606,14 @@ func TestResetPasswordIsAtomicAndRevokesSessions(t *testing.T) {
 	if string(fetched.Password) != "new-reset-hash" {
 		t.Fatalf("password was not updated: %q", fetched.Password)
 	}
-	if _, err := srv.GetRefreshTokenByToken(ctx, refreshPlaintext); !errors.Is(err, ErrDBNotFound) {
+	if _, err := srv.GetRefreshTokenByToken(ctx, refreshPlaintext); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("refresh sessions survived password reset: %v", err)
 	}
-	if err := srv.ResetPassword(ctx, "atomic-reset-token", []byte("another-hash")); !errors.Is(err, ErrDBNotFound) {
-		t.Fatalf("reset token was reused; want ErrDBNotFound, got %v", err)
+	if err := srv.ResetPassword(ctx, "atomic-reset-token", []byte("another-hash")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("reset token was reused; want ErrNotFound, got %v", err)
 	}
-	if err := srv.ResetPassword(ctx, "older-reset-token", []byte("another-hash")); !errors.Is(err, ErrDBNotFound) {
-		t.Fatalf("sibling reset token survived password reset; want ErrDBNotFound, got %v", err)
+	if err := srv.ResetPassword(ctx, "older-reset-token", []byte("another-hash")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("sibling reset token survived password reset; want ErrNotFound, got %v", err)
 	}
 }
 
@@ -580,7 +621,7 @@ func TestResetPasswordIsAtomicAndRevokesSessions(t *testing.T) {
 // its mutation, fetched by the relay, marked published, and reaped.
 func TestOutboxLifecycle(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	user, err := srv.CreateUser(ctx, models.NewUser{
 		Name:     "Outbox User",
@@ -642,7 +683,7 @@ func TestOutboxLifecycle(t *testing.T) {
 // no event row is left behind — the transaction rolls back as a unit.
 func TestOutboxAtomicity(t *testing.T) {
 	srv := mustNew(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	createTestUser(t, srv, "atomic-user", "atomic@example.com")
 
@@ -656,8 +697,8 @@ func TestOutboxAtomicity(t *testing.T) {
 		eventBuilt = true
 		return &models.OutboxMessage{Topic: "iam.user.created", Key: u.ID, Payload: u}
 	})
-	if !errors.Is(err, ErrDBDuplicatedEntry) {
-		t.Fatalf("expected ErrDBDuplicatedEntry, got %v", err)
+	if !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("expected ErrDuplicate, got %v", err)
 	}
 	if eventBuilt {
 		t.Error("event callback ran for a failed mutation")

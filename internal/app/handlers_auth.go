@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/nourabuild/iam-service/internal/sdk/models"
 	"github.com/nourabuild/iam-service/internal/sdk/sqldb"
-	"github.com/nourabuild/iam-service/internal/services/kafka"
-	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -40,18 +40,26 @@ var readRandomBytes = rand.Read
 // login response timing does not reveal whether an email is registered.
 var dummyPasswordHash = []byte("$2a$10$Vt2o6/8XZ46Ga5QIXQGDUuW8fBES0LtU7EKi2TlCSnk2kGkN.a6XK")
 
-type LoginRequest struct {
+type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
-type RefreshRequest struct {
+type refreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
-type TokenResponse struct {
+type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+}
+
+type registerRequest struct {
+	Name            string
+	Account         string
+	Email           string
+	Password        []byte
+	PasswordConfirm []byte
 }
 
 type passwordComplexity struct {
@@ -70,11 +78,10 @@ func parseMultipartOrForm(r *http.Request, maxMemory int64) error {
 	return nil
 }
 
-func (a *App) HandleRegister(c *gin.Context) {
+func (a *Server) handleRegister(c *gin.Context) {
 	ctx := c.Request.Context()
 	if err := parseMultipartOrForm(c.Request, maxRegisterBodyBytes); err != nil {
-		a.report(c, "register", "parse_form", slog.LevelError, err)
-		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
+		writeRequestError(c, err)
 		return
 	}
 
@@ -84,7 +91,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 	password := c.PostForm("password")
 	passwordConfirm := c.PostForm("password_confirm")
 
-	req := models.NewUser{
+	req := registerRequest{
 		Name:            name,
 		Account:         account,
 		Email:           email,
@@ -106,11 +113,10 @@ func (a *App) HandleRegister(c *gin.Context) {
 	}
 
 	newUser := models.NewUser{
-		Name:            req.Name,
-		Account:         req.Account,
-		Email:           req.Email,
-		Password:        hashedPassword,
-		PasswordConfirm: req.PasswordConfirm,
+		Name:     req.Name,
+		Account:  req.Account,
+		Email:    req.Email,
+		Password: hashedPassword,
 	}
 
 	// The UserCreated event is written to the outbox in the same transaction
@@ -118,7 +124,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 	correlationID := requestID(c)
 	createdUser, err := a.db.CreateUser(ctx, newUser, func(u models.User) *models.OutboxMessage {
 		return &models.OutboxMessage{
-			Topic: kafka.ProduceTopicUserCreated,
+			Topic: models.TopicUserCreated,
 			Key:   u.ID,
 			Payload: models.UserCreatedEvent{
 				EventType:  "UserCreated",
@@ -134,7 +140,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 		}
 	})
 	if err != nil {
-		if errors.Is(err, sqldb.ErrDBDuplicatedEntry) {
+		if errors.Is(err, sqldb.ErrDuplicate) {
 			writeError(c, http.StatusConflict, "user_already_exists", nil)
 			return
 		}
@@ -143,7 +149,7 @@ func (a *App) HandleRegister(c *gin.Context) {
 		return
 	}
 
-	tokenPair, err := a.jwt.IssuePair(createdUser, time.Now().UTC())
+	tokenPair, err := a.tokens.IssuePair(createdUser, time.Now().UTC())
 	if err != nil {
 		a.report(c, "register", "jwt", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
@@ -156,17 +162,16 @@ func (a *App) HandleRegister(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, TokenResponse{
+	c.JSON(http.StatusCreated, tokenResponse{
 		AccessToken:  tokenPair.AccessToken,
 		RefreshToken: tokenPair.RefreshToken,
 	})
 }
 
-func (a *App) HandleLogin(c *gin.Context) {
-	var req LoginRequest
+func (a *Server) handleLogin(c *gin.Context) {
+	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		a.report(c, "login", "unmarshal", slog.LevelError, err)
-		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
+		writeRequestError(c, err)
 		return
 	}
 
@@ -179,7 +184,7 @@ func (a *App) HandleLogin(c *gin.Context) {
 
 	user, err := a.db.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil {
-		if errors.Is(err, sqldb.ErrDBNotFound) {
+		if errors.Is(err, sqldb.ErrNotFound) {
 			_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(req.Password))
 			writeError(c, http.StatusUnauthorized, "invalid_credentials", nil)
 			return
@@ -194,7 +199,7 @@ func (a *App) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	tokenPair, err := a.jwt.IssuePair(user, time.Now().UTC())
+	tokenPair, err := a.tokens.IssuePair(user, time.Now().UTC())
 	if err != nil {
 		a.report(c, "login", "jwt", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
@@ -207,17 +212,16 @@ func (a *App) HandleLogin(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, TokenResponse{
+	c.JSON(http.StatusOK, tokenResponse{
 		AccessToken:  tokenPair.AccessToken,
 		RefreshToken: tokenPair.RefreshToken,
 	})
 }
 
-func (a *App) HandleRefresh(c *gin.Context) {
-	var req RefreshRequest
+func (a *Server) handleRefresh(c *gin.Context) {
+	var req refreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		a.report(c, "refresh", "unmarshal", slog.LevelError, err)
-		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
+		writeRequestError(c, err)
 		return
 	}
 
@@ -230,7 +234,7 @@ func (a *App) HandleRefresh(c *gin.Context) {
 
 	storedToken, err := a.db.GetRefreshTokenByToken(c.Request.Context(), []byte(req.RefreshToken))
 	if err != nil {
-		if errors.Is(err, sqldb.ErrDBNotFound) {
+		if errors.Is(err, sqldb.ErrNotFound) {
 			writeError(c, http.StatusUnauthorized, "invalid_token", nil)
 			return
 		}
@@ -260,7 +264,7 @@ func (a *App) HandleRefresh(c *gin.Context) {
 
 	user, err := a.db.GetUserByID(c.Request.Context(), storedToken.UserID)
 	if err != nil {
-		if errors.Is(err, sqldb.ErrDBNotFound) {
+		if errors.Is(err, sqldb.ErrNotFound) {
 			writeError(c, http.StatusUnauthorized, "invalid_token", nil)
 			return
 		}
@@ -270,7 +274,7 @@ func (a *App) HandleRefresh(c *gin.Context) {
 	}
 
 	// Rotate: issue a fresh (access, refresh) pair and retire the presented one.
-	tokenPair, err := a.jwt.IssuePair(user, time.Now().UTC())
+	tokenPair, err := a.tokens.IssuePair(user, time.Now().UTC())
 	if err != nil {
 		a.report(c, "refresh", "jwt_generate", slog.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_generate_tokens_error", nil)
@@ -282,7 +286,7 @@ func (a *App) HandleRefresh(c *gin.Context) {
 		Token:     []byte(tokenPair.RefreshToken),
 		ExpiresAt: tokenPair.RefreshTokenExpiresAt,
 	}); err != nil {
-		if errors.Is(err, sqldb.ErrDBNotFound) {
+		if errors.Is(err, sqldb.ErrNotFound) {
 			// Another request rotated this token after our initial lookup.
 			writeError(c, http.StatusUnauthorized, "invalid_token", nil)
 			return
@@ -292,13 +296,13 @@ func (a *App) HandleRefresh(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, TokenResponse{
+	c.JSON(http.StatusOK, tokenResponse{
 		AccessToken:  tokenPair.AccessToken,
 		RefreshToken: tokenPair.RefreshToken,
 	})
 }
 
-func validateRegisterInput(req models.NewUser) (string, map[string]string) {
+func validateRegisterInput(req registerRequest) (string, map[string]string) {
 	validationErrors := make(map[string]string)
 
 	if strings.TrimSpace(req.Name) == "" {
@@ -335,17 +339,19 @@ func validateRegisterInput(req models.NewUser) (string, map[string]string) {
 	}
 
 	var complexity passwordComplexity
-	if len(req.Password) < minPasswordLength {
+	switch {
+	case len(req.Password) < minPasswordLength:
 		validationErrors["password"] = "password_too_short"
-	} else if len(req.Password) > maxPasswordLength {
+	case len(req.Password) > maxPasswordLength:
 		validationErrors["password"] = "password_too_long"
-	} else {
+	default:
 		complexity = passwordComplexityFlags(req.Password)
-		if !complexity.hasUpper {
+		switch {
+		case !complexity.hasUpper:
 			validationErrors["password"] = "password_no_uppercase"
-		} else if !complexity.hasNumber {
+		case !complexity.hasNumber:
 			validationErrors["password"] = "password_no_number"
-		} else if !complexity.hasSpecial {
+		case !complexity.hasSpecial:
 			validationErrors["password"] = "password_no_special_char"
 		}
 	}
@@ -357,7 +363,7 @@ func validateRegisterInput(req models.NewUser) (string, map[string]string) {
 	return primaryRegisterError(validationErrors, req.Password, complexity), validationErrors
 }
 
-func validateLoginInput(req LoginRequest) map[string]string {
+func validateLoginInput(req loginRequest) map[string]string {
 	validationErrors := make(map[string]string)
 
 	if strings.TrimSpace(req.Email) == "" {
@@ -374,7 +380,7 @@ func validateLoginInput(req LoginRequest) map[string]string {
 	return validationErrors
 }
 
-func validateRefreshInput(req RefreshRequest) map[string]string {
+func validateRefreshInput(req refreshRequest) map[string]string {
 	validationErrors := make(map[string]string)
 
 	if strings.TrimSpace(req.RefreshToken) == "" {
@@ -416,15 +422,16 @@ func primaryRegisterError(details map[string]string, password []byte, complexity
 		errCode = "account_too_short"
 	}
 	if _, hasPasswordErr := details["password"]; hasPasswordErr {
-		if len(password) < minPasswordLength {
+		switch {
+		case len(password) < minPasswordLength:
 			errCode = "password_too_short"
-		} else if len(password) > maxPasswordLength {
+		case len(password) > maxPasswordLength:
 			errCode = "password_too_long"
-		} else if !complexity.hasUpper {
+		case !complexity.hasUpper:
 			errCode = "password_must_contain_uppercase"
-		} else if !complexity.hasNumber {
+		case !complexity.hasNumber:
 			errCode = "password_must_contain_number"
-		} else if !complexity.hasSpecial {
+		case !complexity.hasSpecial:
 			errCode = "password_must_contain_special_character"
 		}
 	}
@@ -436,33 +443,31 @@ func primaryRegisterError(details map[string]string, password []byte, complexity
 // Password Management
 // ---------------------------------------------
 
-// ForgotPasswordRequest represents the request body for forgot password
-type ForgotPasswordRequest struct {
+type forgotPasswordRequest struct {
 	Email string `json:"email" binding:"required,email"`
 }
 
-// ResetPasswordRequest represents the request body for password reset
-type ResetPasswordRequest struct {
+type resetPasswordRequest struct {
 	Token           string `json:"token"` // Optional in body, can come from query param
 	Password        string `json:"password" binding:"required"`
 	PasswordConfirm string `json:"password_confirm" binding:"required"`
 }
 
-// HandleForgotPassword handles password reset requests.
+// handleForgotPassword handles password reset requests.
 //
 // The response body is intentionally identical for "user exists" and "user
 // does not exist" — including on internal failures — so the endpoint cannot
 // be used to probe for registered emails. Operational failures are reported
 // through structured logs instead of the client.
-func (a *App) HandleForgotPassword(c *gin.Context) {
+func (a *Server) handleForgotPassword(c *gin.Context) {
 	const genericMessage = "If the email exists, a password reset link has been sent"
 	respondGeneric := func() {
 		c.JSON(http.StatusOK, gin.H{"message": genericMessage})
 	}
 
-	var req ForgotPasswordRequest
+	var req forgotPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
+		writeRequestError(c, err)
 		return
 	}
 
@@ -470,7 +475,7 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 
 	user, err := a.db.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil {
-		if !errors.Is(err, sqldb.ErrDBNotFound) {
+		if !errors.Is(err, sqldb.ErrNotFound) {
 			a.report(c, "forgot_password", "db", slog.LevelError, err)
 		}
 		respondGeneric()
@@ -494,18 +499,18 @@ func (a *App) HandleForgotPassword(c *gin.Context) {
 		return
 	}
 
-	if err := a.mailtrap.SendPasswordResetEmail(c.Request.Context(), user.Email, token); err != nil {
+	if err := a.mailer.SendPasswordResetEmail(c.Request.Context(), user.Email, token); err != nil {
 		a.report(c, "forgot_password", "email", slog.LevelError, err)
 	}
 
 	respondGeneric()
 }
 
-// HandleResetPassword handles password reset with token
-func (a *App) HandleResetPassword(c *gin.Context) {
-	var req ResetPasswordRequest
+// handleResetPassword handles password reset with a token.
+func (a *Server) handleResetPassword(c *gin.Context) {
+	var req resetPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_request_body", nil)
+		writeRequestError(c, err)
 		return
 	}
 
@@ -549,7 +554,7 @@ func (a *App) HandleResetPassword(c *gin.Context) {
 	// in one database transaction.
 	err = a.db.ResetPassword(c.Request.Context(), req.Token, hashedPassword)
 	if err != nil {
-		if errors.Is(err, sqldb.ErrDBNotFound) {
+		if errors.Is(err, sqldb.ErrNotFound) {
 			writeError(c, http.StatusBadRequest, "invalid_or_expired_reset_token", nil)
 			return
 		}

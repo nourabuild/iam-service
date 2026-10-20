@@ -3,13 +3,11 @@ package app
 import (
 	"strings"
 	"testing"
-
-	"github.com/nourabuild/iam-service/internal/sdk/models"
 )
 
 func TestValidateRegisterInputRejectsPasswordAboveBcryptLimit(t *testing.T) {
 	password := []byte(strings.Repeat("A", maxPasswordLength+1))
-	errCode, details := validateRegisterInput(models.NewUser{
+	errCode, details := validateRegisterInput(registerRequest{
 		Name:            "Ada Lovelace",
 		Account:         "adalovelace",
 		Email:           "ada@example.com",

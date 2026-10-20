@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,11 +17,8 @@ import (
 	"github.com/nourabuild/iam-service/internal/sdk/config"
 )
 
-type MailtrapRepository interface {
-	SendPasswordResetEmail(ctx context.Context, to, token string) error
-}
-
-type MailtrapService struct {
+// Client sends transactional messages through Mailtrap.
+type Client struct {
 	apiToken         string
 	apiURL           string
 	fromEmail        string
@@ -30,8 +28,9 @@ type MailtrapService struct {
 	httpClient       *http.Client
 }
 
-func NewMailtrapService(cfg config.Mailtrap) *MailtrapService {
-	return &MailtrapService{
+// New constructs a Mailtrap Client from cfg.
+func New(cfg config.Mailtrap) *Client {
+	return &Client{
 		apiToken:         cfg.APIToken,
 		apiURL:           cfg.APIURL,
 		fromEmail:        cfg.SenderEmail,
@@ -49,12 +48,13 @@ func NewMailtrapService(cfg config.Mailtrap) *MailtrapService {
 	}
 }
 
-func (m *MailtrapService) SendPasswordResetEmail(ctx context.Context, to, token string) error {
+// SendPasswordResetEmail sends a password-reset link to a bare email address.
+func (c *Client) SendPasswordResetEmail(ctx context.Context, to, token string) error {
 	to = strings.TrimSpace(to)
 	token = strings.TrimSpace(token)
 
-	if strings.TrimSpace(m.apiToken) == "" {
-		return fmt.Errorf("mailtrap API token is not configured")
+	if strings.TrimSpace(c.apiToken) == "" {
+		return errors.New("mailtrap API token is not configured")
 	}
 
 	address, err := mail.ParseAddress(to)
@@ -62,45 +62,45 @@ func (m *MailtrapService) SendPasswordResetEmail(ctx context.Context, to, token 
 		return fmt.Errorf("invalid recipient email: %w", err)
 	}
 	if address.Address != to {
-		return fmt.Errorf("invalid recipient email: bare address required")
+		return errors.New("invalid recipient email: bare address required")
 	}
 
 	if token == "" {
-		return fmt.Errorf("password reset token is required")
+		return errors.New("password reset token is required")
 	}
 
-	resetURL, err := m.buildPasswordResetURL(token)
+	resetURL, err := c.buildPasswordResetURL(token)
 	if err != nil {
 		return err
 	}
 
 	payload := mailtrapTemplateRequest{
 		From: mailtrapAddress{
-			Email: m.fromEmail,
-			Name:  m.fromName,
+			Email: c.fromEmail,
+			Name:  c.fromName,
 		},
 		To: []mailtrapAddress{
 			{
 				Email: to,
 			},
 		},
-		TemplateUUID: m.templateUUID,
+		TemplateUUID: c.templateUUID,
 		TemplateVariables: passwordResetTemplateVariables{
 			UserEmail:     to,
 			PassResetLink: resetURL,
 		},
 	}
 
-	return m.send(ctx, payload)
+	return c.send(ctx, payload)
 }
 
-func (m *MailtrapService) buildPasswordResetURL(token string) (string, error) {
-	resetURL, err := url.Parse(m.passwordResetURL)
+func (c *Client) buildPasswordResetURL(token string) (string, error) {
+	resetURL, err := url.Parse(c.passwordResetURL)
 	if err != nil {
 		return "", fmt.Errorf("invalid password reset url: %w", err)
 	}
 	if resetURL.Host == "" || (resetURL.Scheme != "http" && resetURL.Scheme != "https") {
-		return "", fmt.Errorf("invalid password reset url: absolute http(s) URL required")
+		return "", errors.New("invalid password reset url: absolute http(s) URL required")
 	}
 
 	query := resetURL.Query()
@@ -110,25 +110,25 @@ func (m *MailtrapService) buildPasswordResetURL(token string) (string, error) {
 	return resetURL.String(), nil
 }
 
-func (m *MailtrapService) send(ctx context.Context, payload mailtrapTemplateRequest) error {
+func (c *Client) send(ctx context.Context, payload mailtrapTemplateRequest) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal mailtrap payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.apiURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create mailtrap request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+m.apiToken)
+	req.Header.Set("Authorization", "Bearer "+c.apiToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := m.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("send mailtrap request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Drain normal provider responses so the transport can safely reuse the
 	// underlying connection. Bound the read in case a broken endpoint returns

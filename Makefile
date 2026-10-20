@@ -1,33 +1,53 @@
 # ==============================================================================
-# Load environment variables 
+# Load environment variables
 ifneq (,$(wildcard ./.env))
 include .env
 export
 endif
 
-.PHONY: run tidy deps-list deps-upgrade deps-cleancache verify-checksums list \
-	lint staticcheck migrate-create migrate-up migrate-down migrate-force \
-	migrate-version migrate-drop test test-race coverage kafka kafka-ui \
+# Ignore the local (gitignored) vendor/ dir and never rewrite go.mod implicitly.
+export GOFLAGS = -mod=readonly
+
+UNIT_TEST_PACKAGES := \
+	./cmd/... \
+	./internal/app/... \
+	./internal/sdk/config/... \
+	./internal/sdk/errs/... \
+	./internal/sdk/middleware/... \
+	./internal/sdk/models/... \
+	./internal/sdk/observability/... \
+	./internal/services/...
+
+.PHONY: run build fmt fmt-check tidy tidy-check deps-list deps-upgrade \
+	deps-cleancache verify-checksums module-check list lint staticcheck verify \
+	migrate-create migrate-up migrate-down migrate-force migrate-version \
+	migrate-drop test test-race test-unit test-db coverage kafka kafka-ui \
 	kafka-topics kafka-topics-list
 
 # ==============================================================================
 # Main
 
 run:
-	go run ./cmd/api/main.go
+	go run ./cmd/api
+
+build:
+	CGO_ENABLED=0 go build ./...
 
 # ==============================================================================
 # Modules support
 
 tidy:
-	go mod tidy
+	GOFLAGS=-mod=mod go mod tidy
+
+tidy-check:
+	go mod tidy -diff
 
 deps-list:
-	go list -m -u -mod=readonly all
+	go list -m -u all
 
 deps-upgrade:
-	go get -u -v ./...
-	go mod tidy
+	GOFLAGS=-mod=mod go get -u -v ./...
+	GOFLAGS=-mod=mod go mod tidy
 
 deps-cleancache:
 	go clean -modcache
@@ -35,15 +55,35 @@ deps-cleancache:
 verify-checksums:
 	go mod verify
 
+module-check: verify-checksums tidy-check
+
 list:
-	go list -mod=mod all
+	go list all
+
+# ==============================================================================
+# Formatting and static analysis
+
+fmt:
+	golangci-lint fmt
+
+# Treat formatter output as a failure even on formatter paths that exit zero
+# after printing a diff, while preserving real formatter errors.
+fmt-check:
+	@output="$$(golangci-lint fmt --diff)"; status=$$?; \
+	if [ -n "$$output" ]; then \
+		printf '%s\n' "$$output"; \
+	fi; \
+	if [ $$status -ne 0 ] || [ -n "$$output" ]; then exit 1; fi
 
 lint:
-	CGO_ENABLED=0 go vet ./...
-	go tool staticcheck -checks=all ./...
+	golangci-lint run
 
 staticcheck:
 	go tool staticcheck -checks=all ./...
+
+# Keep this target as the single developer and CI entry point. Database tests
+# remain separate because they require Docker through testcontainers.
+verify: module-check fmt-check build lint test-unit
 
 # ==============================================================================
 # Database migrations
@@ -81,6 +121,12 @@ test:
 test-race:
 	go test -race ./...
 
+test-unit:
+	go test $(UNIT_TEST_PACKAGES)
+
+test-db:
+	go test -tags=integration ./internal/sdk/sqldb/...
+
 coverage:
 	go test -coverprofile=coverage.out ./internal/app/...
 	go tool cover -html=coverage.out -o coverage.html
@@ -91,12 +137,15 @@ coverage:
 kafka:
 	docker run -d --name kafka -p 9092:9092 apache/kafka:4.2.0
 
+# kafka-ui joins kafka's Docker network and talks to its INTERNAL listener.
+# Port 8090 avoids clashing with Expo/Metro, which uses 8081.
+
 kafka-ui:
 	docker run -d --name kafka-ui \
-  -p 8081:8080 \
-  --link kafka:kafka \
+  -p 8090:8080 \
+  --network brgts_default \
   -e KAFKA_CLUSTERS_0_NAME=local \
-  -e KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092 \
+  -e KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:29092 \
   provectuslabs/kafka-ui:latest
 
 kafka-topics:
